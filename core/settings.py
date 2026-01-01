@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import dj_database_url
 
 load_dotenv()
 
@@ -13,7 +14,6 @@ SECRET_KEY = os.getenv('SECRET_KEY' )
 DEBUG=os.getenv('DEBUG', 'False') == 'True'
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
-# ALLOWED_HOSTS = ['dev.goldenzona.com','goldenzona.com','api.goldenzona.com','localhost']
 
 DJ_DEFAULT_INSTALLED_APPS=[
     'django.contrib.admin',
@@ -93,7 +93,6 @@ DATABASES = {
     }
 }
 
-"""
 
 DATABASES = {
     'default': {
@@ -105,8 +104,14 @@ DATABASES = {
         'PORT': os.getenv('DB_PORT'),
     }
 }
+"""
 
 
+DATABASES = {
+    'default': dj_database_url.config(
+        default=os.getenv('DATABASE_URL'),
+    )
+}
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 

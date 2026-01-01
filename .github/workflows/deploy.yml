@@ -1,0 +1,96 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  DEPLOY_PATH: ~/atc_backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 400 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to EC2
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.venv' \
+            ./ ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:${{ env.DEPLOY_PATH }}/
+          rm -rf ${{ env.DEPLOY_PATH }}/.venv
+
+      - name: Update environment configuration
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
+            cd ${{ env.DEPLOY_PATH }}
+            
+            # Create/update .env file
+            cat > .env << 'ENVFILE'
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            DEBUG=${{ secrets.DEBUG }}
+            DATABASE_URL=${{secrets.DATABASE_URL}}
+            EMAIL_HOST_USER=${{ secrets.EMAIL_HOST_USER }}
+            EMAIL_HOST_PASSWORD=${{ secrets.EMAIL_HOST_PASSWORD }}
+            EMAIL_HOST=${{ secrets.EMAIL_HOST }}
+            EMAIL_PORT=${{ secrets.EMAIL_PORT }}
+            SUPPORT_EMAIL_ADDRESS=${{ secrets.SUPPORT_EMAIL_ADDRESS }}
+            ATC_EMAIL_ADDRESS=${{ secrets.ATC_EMAIL_ADDRESS }}
+            FRONTEND_DOMAIN=${{ secrets.FRONTEND_DOMAIN }}
+            SITE_NAME=${{ secrets.SITE_NAME }}
+            SITE_URL=${{ secrets.SITE_URL }}
+            AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            AWS_STORAGE_BUCKET_NAME=${{ secrets.AWS_STORAGE_BUCKET_NAME }}
+            AWS_S3_REGION_NAME=${{ secrets.AWS_S3_REGION_NAME }}
+            ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }}
+            FLUTTERWAVE_PUB_KEY=${{ secrets.FLUTTERWAVE_PUB_KEY }}
+            FLUTTERWAVE_SECRET_KEY=${{ secrets.FLUTTERWAVE_SECRET_KEY }}
+            FLUTTERWAVE_CLIENT_ENCRYTION_KEY=${{ secrets.FLUTTERWAVE_CLIENT_ENCRYTION_KEY }}
+            FLUTTERWAVE_ENCRYPTION_KEY=${{ secrets.FLUTTERWAVE_ENCRYPTION_KEY }}
+            FLUTTERWAVE_WEBHHOK_HASH=${{ secrets.FLUTTERWAVE_WEBHHOK_HASH }}
+            EXCHANGERATE_API_KEY=${{ secrets.EXCHANGERATE_API_KEY }}
+            FIXER_API_KEY=${{ secrets.FIXER_API_KEY }}
+            KYC_MANUAL_PAYMENT_USD_BANK_NAME=${{ secrets.KYC_MANUAL_PAYMENT_USD_BANK_NAME }}
+            KYC_MANUAL_PAYMENT_USD_ACCOUNT_NUMBER=${{ secrets.KYC_MANUAL_PAYMENT_USD_ACCOUNT_NUMBER }}
+            KYC_MANUAL_PAYMENT_USD_ACCOUNT_NAME=${{ secrets.KYC_MANUAL_PAYMENT_USD_ACCOUNT_NAME }}
+            KYC_MANUAL_PAYMENT_USD_REFERENCE=${{ secrets.KYC_MANUAL_PAYMENT_USD_REFERENCE }}
+            KYC_MANUAL_PAYMENT_NGN_BANK_NAME=${{ secrets.KYC_MANUAL_PAYMENT_NGN_BANK_NAME }}
+            KYC_MANUAL_PAYMENT_NGN_ACCOUNT_NUMBER=${{ secrets.KYC_MANUAL_PAYMENT_NGN_ACCOUNT_NUMBER}}
+            KYC_MANUAL_PAYMENT_NGN_ACCOUNT_NAME=${{ secrets.KYC_MANUAL_PAYMENT_NGN_ACCOUNT_NAME }}
+            KYC_MANUAL_PAYMENT_NGN_REFERENCE=${{ secrets.KYC_MANUAL_PAYMENT_NGN_REFERENCE }}
+            DEVELOPER_EMAIL=${{ secrets.DEVELOPER_EMAIL }}
+            EOF            
+
+
+      - name: Deploy with Docker Compose
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose up -d --build --remove-orphans
+            docker image prune -f
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.EC2_USER }}@${{ env.EC2_HOST }} \
+            "docker compose -f ${{ env.DEPLOY_PATH }}/docker-compose.yml ps"
