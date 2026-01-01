@@ -9,7 +9,7 @@ on:
 env:
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ${{ secrets.EC2_USER }}
-  DEPLOY_PATH: ~/atc_backend
+  DEPLOY_PATH: ~/golden_b
 
 jobs:
   deploy:
@@ -52,7 +52,6 @@ jobs:
             EMAIL_HOST=${{ secrets.EMAIL_HOST }}
             EMAIL_PORT=${{ secrets.EMAIL_PORT }}
             SUPPORT_EMAIL_ADDRESS=${{ secrets.SUPPORT_EMAIL_ADDRESS }}
-            ATC_EMAIL_ADDRESS=${{ secrets.ATC_EMAIL_ADDRESS }}
             FRONTEND_DOMAIN=${{ secrets.FRONTEND_DOMAIN }}
             SITE_NAME=${{ secrets.SITE_NAME }}
             SITE_URL=${{ secrets.SITE_URL }}
