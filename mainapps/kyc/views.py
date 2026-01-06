@@ -1,4 +1,8 @@
-from rest_framework import viewsets, status, permissions
+import logging
+from uuid import uuid4
+
+import requests
+from rest_framework import viewsets, status, permissions, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, BasePermission
@@ -7,18 +11,26 @@ from django.db.models import Count, Avg, Q
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from datetime import timedelta
+from django.conf import settings
+from rest_framework.views import APIView
+from decimal import Decimal
 from django.contrib.auth import get_user_model
-from .models import KYCApplication, KYCDocument, KYCReviewNote, ComplianceCheck, KYCSettings
+from rest_framework.exceptions import ValidationError
+from .models import KYCApplication, KYCDocument, KYCPayment, KYCReviewNote, ComplianceCheck, KYCSettings
 from .serializers import (
     KYCApplicationSerializer, KYCApplicationCreateSerializer,
     KYCDocumentUploadSerializer, KYCApplicationSubmitSerializer,
     KYCDocumentSerializer, KYCReviewNoteSerializer,
     ComplianceCheckSerializer, KYCApplicationReviewSerializer,
-    KYCSettingsSerializer, KYCStatsSerializer
+    KYCSettingsSerializer, KYCStatsSerializer, KYCPaymentSerializer,
+    KYCPaymentInitiateSerializer
 )
 from mainapps.accounts.models import Address
 from mainapps.accounts.serializers import AddressSerializer
 from cities_light.models import Country, Region, SubRegion, City
+
+
+logger = logging.getLogger(__name__)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -433,3 +445,282 @@ class KYCSettingsViewSet(viewsets.ModelViewSet):
     def get_object(self):
         settings, created = KYCSettings.objects.get_or_create()
         return settings
+
+
+class KYCPaymentViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet
+):
+    """Handle initialization and retrieval of KYC payment attempts."""
+    serializer_class = KYCPaymentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return KYCPayment.objects.filter(user=self.request.user).order_by('-created_at')
+
+    def create(self, request, *args, **kwargs):
+        user = request.user
+
+        successful_payment = KYCPayment.objects.filter(
+            user=user,
+            status=KYCPayment.Status.SUCCESSFUL
+        ).first()
+        if successful_payment:
+            return Response(
+                {
+                    'message': 'KYC payment already completed.',
+                    'payment': self.get_serializer(successful_payment).data,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        pending_payment = KYCPayment.objects.filter(
+            user=user,
+            status=KYCPayment.Status.PENDING
+        ).first()
+        if pending_payment:
+            return Response(
+                {
+                    'message': 'You have a pending payment attempt.',
+                    'payment': self.get_serializer(pending_payment).data,
+                    'flutterwave_payload': pending_payment.init_payload,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        init_serializer = KYCPaymentInitiateSerializer(data=request.data)
+        init_serializer.is_valid(raise_exception=True)
+        redirect_url = init_serializer.validated_data.get('redirect_url') or getattr(settings, 'FLUTTERWAVE_REDIRECT_URL', None)
+        requested_currency = init_serializer.validated_data.get('currency')
+
+        secret_key = getattr(settings, 'FLUTTERWAVE_SECRET_KEY', None)
+        if not secret_key:
+            return Response(
+                {'detail': 'Flutterwave secret key is not configured on the server.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        public_key = (
+            getattr(settings, 'FLUTTERWAVE_PUBLIC_KEY', None)
+            or getattr(settings, 'FLUTTERWAVE_PUB_KEY', None)
+        )
+        if not public_key:
+            return Response(
+                {'detail': 'Flutterwave public key is not configured on the server.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        amount, currency = self._determine_charge_amount(requested_currency)
+        if amount <= 0:
+            return Response(
+                {'detail': 'Invalid KYC payment amount configured.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        tx_ref = f"kyc-{user.id}-{uuid4().hex[:10]}"
+
+        payload = {
+            "tx_ref": tx_ref,
+            "amount": float(amount),
+            "currency": currency,
+            "payment_options": "card,account,ussd,banktransfer",
+            "redirect_url": redirect_url,
+            "customer": {
+                "email": user.email,
+                "name": user.get_full_name() or user.email,
+            },
+            "meta": {
+                "user_id": user.id,
+                "kyc_payment": True,
+            },
+            "customizations": {
+                "title": getattr(settings, 'SITE_NAME', 'KYC Verification Fee'),
+                "description": getattr(settings, 'KYC_APPLICATION_FEE_DESCRIPTION', 'KYC verification payment'),
+            },
+            "public_key": public_key,
+        }
+
+        phone_number = getattr(getattr(user, 'profile', None), 'phone_number', None) or getattr(user, 'phone_number', None)
+        if phone_number:
+            payload["customer"]["phone_number"] = phone_number
+
+        base_url = getattr(settings, 'FLUTTERWAVE_BASE_URL', 'https://api.flutterwave.com/v3')
+        try:
+            gateway_response = requests.post(
+                f"{base_url.rstrip('/')}/payments",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+            gateway_response.raise_for_status()
+            response_data = gateway_response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.exception("Failed to initialize Flutterwave payment")
+            return Response(
+                {'detail': 'Unable to initialize payment at the moment.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        payment_data = response_data.get('data') if isinstance(response_data, dict) else {}
+        payment_link = payment_data.get('link')
+        flw_ref = payment_data.get('flw_ref') or payment_data.get('id')
+
+        if not payment_link:
+            logger.error("Flutterwave response missing payment link: %s", response_data)
+            return Response(
+                {'detail': 'Payment link not returned by gateway.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        payment = KYCPayment.objects.create(
+            user=user,
+            tx_ref=tx_ref,
+            flw_ref=flw_ref,
+            amount=amount,
+            currency=currency,
+            status=KYCPayment.Status.PENDING,
+            payment_link=payment_link,
+            init_payload={"request": payload, "response": response_data},
+        )
+
+        return Response(
+            {
+                'message': 'KYC payment initialized successfully.',
+                'payment': self.get_serializer(payment).data,
+                'flutterwave_payload': payload,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=False, methods=['get'])
+    def latest(self, request):
+        payment = self.get_queryset().first()
+        if not payment:
+            return Response(
+                {'detail': 'No KYC payments found for this user.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(self.get_serializer(payment).data)
+
+    def _determine_charge_amount(self, requested_currency: str):
+        """Return tuple of (amount_decimal, currency_code)."""
+        base_currency = (getattr(settings, 'KYC_APPLICATION_FEE_CURRENCY', 'USD') or 'USD').upper()
+        base_amount = getattr(settings, 'KYC_APPLICATION_FEE_AMOUNT', Decimal('0'))
+        try:
+            base_amount = Decimal(str(base_amount))
+        except Exception:
+            base_amount = Decimal('0')
+
+        target_currency = (requested_currency or base_currency).upper()
+
+        if target_currency == base_currency:
+            return base_amount, base_currency
+
+        converted_amount = self._convert_currency(
+            amount=base_amount,
+            from_currency=base_currency,
+            to_currency=target_currency
+        )
+        return converted_amount, target_currency
+
+    def _convert_currency(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        """Convert amount using Flutterwave rates endpoint."""
+        secret_key = getattr(settings, 'FLUTTERWAVE_SECRET_KEY', None)
+        try:
+            response = requests.get(
+                f"{getattr(settings, 'FLUTTERWAVE_BASE_URL', 'https://api.flutterwave.com/v3').rstrip('/')}/rates",
+                params={
+                    "from": from_currency,
+                    "to": to_currency,
+                    "amount": str(amount),
+                },
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            raise ValidationError(f"Unable to fetch conversion rate from Flutterwave: {exc}") from exc
+        except ValueError as exc:
+            raise ValidationError("Received invalid response from Flutterwave rates API.") from exc
+
+        if response.status_code >= 400 or data.get('status') != 'success':
+            raise ValidationError("Flutterwave currency conversion failed. Please try another currency.")
+
+        rate_data = data.get('data') or {}
+
+        destination_amount = (
+            rate_data.get('to', {}).get('amount')
+            or rate_data.get('destination_amount')
+            or rate_data.get('converted_amount')
+        )
+        if destination_amount is None:
+            raise ValidationError("Flutterwave response did not include a converted amount.")
+
+        try:
+            converted_decimal = Decimal(str(destination_amount))
+        except Exception as exc:  # noqa: BLE001
+            raise ValidationError("Invalid converted amount returned by Flutterwave.") from exc
+
+        converted_decimal = converted_decimal.quantize(Decimal('0.01'))
+        return converted_decimal
+
+
+
+class FlutterwaveWebhookView(APIView):
+    """Receives payment events from Flutterwave."""
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        expected_signature = (
+            getattr(settings, 'FLUTTERWAVE_WEBHOOK_HASH', None)
+            or getattr(settings, 'FLUTTERWAVE_WEBHHOK_HASH', None)
+        )
+        received_signature = request.headers.get('verif-hash')
+        if expected_signature and received_signature != expected_signature:
+            return Response({'detail': 'Invalid webhook signature.'}, status=status.HTTP_403_FORBIDDEN)
+
+        payload = request.data
+        event_data = payload.get('data') or {}
+        tx_ref = event_data.get('tx_ref')
+        if not tx_ref:
+            return Response({'detail': 'Missing transaction reference.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payment = KYCPayment.objects.get(tx_ref=tx_ref)
+        except KYCPayment.DoesNotExist:
+            return Response({'detail': 'Payment not found, ignoring event.'}, status=status.HTTP_200_OK)
+
+        payment.last_webhook_payload = payload
+        event_status = event_data.get('status')
+
+        if event_status == 'successful':
+            charged_amount = event_data.get('charged_amount') or event_data.get('amount') or payment.amount
+            try:
+                charged_amount = Decimal(str(charged_amount))
+            except Exception:
+                charged_amount = Decimal('0')
+
+            currency = event_data.get('currency')
+            if charged_amount >= payment.amount and currency == payment.currency:
+                payment.status = KYCPayment.Status.SUCCESSFUL
+                payment.paid_at = timezone.now()
+            else:
+                payment.status = KYCPayment.Status.FAILED
+            payment.flw_ref = event_data.get('flw_ref') or event_data.get('id')
+        elif event_status == 'failed':
+            payment.status = KYCPayment.Status.FAILED
+        elif event_status == 'cancelled':
+            payment.status = KYCPayment.Status.CANCELLED
+        else:
+            payment.status = KYCPayment.Status.PENDING
+
+        payment.save()
+        return Response({'status': 'received'})

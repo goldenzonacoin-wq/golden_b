@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.core.files.base import ContentFile
 from .models import (
     KYCApplication, KYCDocument, KYCReviewNote, 
-    ComplianceCheck, KYCSettings
+    ComplianceCheck, KYCSettings, KYCPayment
 )
 
 
@@ -211,6 +211,43 @@ class KYCSettingsSerializer(serializers.ModelSerializer):
             'notify_on_submission', 'notify_on_approval',
             'notify_on_rejection', 'notify_on_expiry'
         )
+
+
+class KYCPaymentSerializer(serializers.ModelSerializer):
+    """Serializer for initiating and viewing KYC payments"""
+    is_successful = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = KYCPayment
+        fields = (
+            'id', 'tx_ref', 'flw_ref', 'amount', 'currency', 'status',
+            'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
+            'payment_rejection_reason', 'created_at', 'updated_at', 'is_successful'
+        )
+        read_only_fields = (
+            'id', 'tx_ref', 'flw_ref', 'amount', 'currency', 'status',
+            'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
+            'payment_rejection_reason', 'created_at', 'updated_at', 'is_successful'
+        )
+
+
+class KYCPaymentInitiateSerializer(serializers.Serializer):
+    """Serializer used when starting a Flutterwave payment."""
+    redirect_url = serializers.URLField(
+        required=False,
+        help_text="Where Flutterwave should redirect the user after payment."
+    )
+    currency = serializers.CharField(
+        required=False,
+        max_length=10,
+        help_text="Preferred payment currency (e.g. USD, NGN, GHS)."
+    )
+
+    def validate_currency(self, value):
+        value = value.upper()
+        if not value.isalpha():
+            raise serializers.ValidationError("Currency must contain only alphabetic characters.")
+        return value
 
 
 class KYCStatsSerializer(serializers.Serializer):

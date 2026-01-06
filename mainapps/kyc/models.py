@@ -447,3 +447,64 @@ class ComplianceCheck(models.Model):
     
     def __str__(self):
         return f"{self.kyc_application.application_id} - {self.check_type} - {self.result}"
+
+
+
+def payment_receipt_path(instance, filename):
+    """Keep payment receipts organized by user and timestamp."""
+    ext = filename.split('.')[-1]
+    timestamp = timezone.now().strftime('%Y%m%d_%H%M%S')
+    unique = uuid.uuid4().hex[:8]
+    new_filename = f"receipt_{instance.user.id}_{timestamp}_{unique}.{ext}"
+    return os.path.join('payment_receipts', str(instance.user.id), new_filename)
+
+
+class KYCPayment(models.Model):
+    """Records one-time Flutterwave payments for KYC."""
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        REVIEW = 'review', 'Review'
+        SUCCESSFUL = 'successful', 'Successful'
+        FAILED = 'failed', 'Failed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='kyc_payments'
+    )
+    tx_ref = models.CharField(max_length=120, unique=True)
+    flw_ref = models.CharField(max_length=120, blank=True, null=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=10, default='USD')
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING
+    )
+    payment_link = models.URLField(blank=True, null=True)
+    init_payload = models.JSONField(default=dict, blank=True)
+    last_webhook_payload = models.JSONField(default=dict, blank=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    payment_receipt = models.FileField(upload_to=payment_receipt_path, blank=True, null=True)
+    payment_confirmed = models.BooleanField(default=False)
+    payment_rejection_reason = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'kyc_payment'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['tx_ref']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.tx_ref} - {self.status}"
+
+    @property
+    def is_successful(self):
+        return self.status == self.Status.SUCCESSFUL
+
