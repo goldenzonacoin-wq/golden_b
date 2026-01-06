@@ -461,6 +461,8 @@ class KYCPaymentViewSet(
 
     def create(self, request, *args, **kwargs):
         user = request.user
+        user = get_user_model().objects.get(id=user.id)
+
 
         successful_payment = KYCPayment.objects.filter(
             user=user,
