@@ -469,29 +469,12 @@ class KYCPaymentViewSet(
             user = get_user_model().objects.get(id=user.id)
 
 
-            successful_payment = KYCPayment.objects.filter(
-                user=user,
-                status=KYCPayment.Status.SUCCESSFUL
-            ).first()
-            if successful_payment:
+            existing_payment = KYCPayment.objects.filter(user=user).order_by('-created_at').first()
+            if existing_payment and existing_payment.status == KYCPayment.Status.SUCCESSFUL:
                 return Response(
                     {
                         'message': 'KYC payment already completed.',
-                        'payment': self.get_serializer(successful_payment).data,
-                    },
-                    status=status.HTTP_200_OK
-                )
-
-            pending_payment = KYCPayment.objects.filter(
-                user=user,
-                status=KYCPayment.Status.PENDING
-            ).first()
-            if pending_payment:
-                return Response(
-                    {
-                        'message': 'You have a pending payment attempt.',
-                        'payment': self.get_serializer(pending_payment).data,
-                        'flutterwave_payload': pending_payment.init_payload,
+                        'payment': self.get_serializer(existing_payment).data,
                     },
                     status=status.HTTP_200_OK
                 )
@@ -583,16 +566,27 @@ class KYCPaymentViewSet(
                     status=status.HTTP_502_BAD_GATEWAY
                 )
 
-            payment = KYCPayment.objects.create(
-                user=user,
-                tx_ref=tx_ref,
-                flw_ref=flw_ref,
-                amount=amount,
-                currency=currency,
-                status=KYCPayment.Status.PENDING,
-                payment_link=payment_link,
-                init_payload={"request": payload, "response": response_data},
-            )
+            if existing_payment:
+                existing_payment.tx_ref = tx_ref
+                existing_payment.flw_ref = flw_ref
+                existing_payment.amount = amount
+                existing_payment.currency = currency
+                existing_payment.status = KYCPayment.Status.PENDING
+                existing_payment.payment_link = payment_link
+                existing_payment.init_payload = {"request": payload, "response": response_data}
+                existing_payment.save()
+                payment = existing_payment
+            else:
+                payment = KYCPayment.objects.create(
+                    user=user,
+                    tx_ref=tx_ref,
+                    flw_ref=flw_ref,
+                    amount=amount,
+                    currency=currency,
+                    status=KYCPayment.Status.PENDING,
+                    payment_link=payment_link,
+                    init_payload={"request": payload, "response": response_data},
+                )
 
             return Response(
                 {
