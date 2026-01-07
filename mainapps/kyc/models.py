@@ -74,18 +74,28 @@ class KYCApplication(models.Model):
     )
     
     # Personal Information
-    full_name = models.CharField(max_length=200)
+    first_name = models.CharField(max_length=150, blank=True, null=True)
+    middle_name = models.CharField(max_length=150, blank=True, null=True)
+    last_name = models.CharField(max_length=150, blank=True, null=True)
+    full_name = models.CharField(max_length=200, blank=True, null=True)
     phone_number = models.CharField(max_length=16,null=True)
     date_of_birth = models.DateField()
     nationality = models.ForeignKey('cities_light.Country', on_delete=models.PROTECT, related_name='kyc_application', null=True)
     address =models.ForeignKey(Address, on_delete=models.PROTECT, related_name='kyc_application', null=True)
+    origin_details = models.ForeignKey(
+        Address,
+        on_delete=models.PROTECT,
+        related_name='kyc_origin_details',
+        null=True,
+        blank=True
+    )
     # Document Information
     document_type = models.CharField(
         max_length=20,
         choices=DocumentType.choices,
         null=True, blank=True
     )
-    document_number = models.CharField(max_length=50,blank=True, null=True)
+    document_number = models.CharField(max_length=50, blank=True, null=True,)
     document_expiry_date = models.DateField(blank=True, null=True,)
     document_issuing_country = models.ForeignKey('cities_light.Country',on_delete=models.PROTECT, blank=True, null=True)
     
@@ -205,6 +215,12 @@ class KYCApplication(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+
+        if not self.full_name:
+            name_parts = [self.first_name, self.middle_name, self.last_name]
+            combined = " ".join([part for part in name_parts if part])
+            if combined:
+                self.full_name = combined
         
         if self.status == self.Status.APPROVED and not self.expires_at:
             self.expires_at = timezone.now() + timedelta(days=365)
@@ -507,4 +523,3 @@ class KYCPayment(models.Model):
     @property
     def is_successful(self):
         return self.status == self.Status.SUCCESSFUL
-

@@ -23,7 +23,7 @@ from .serializers import (
     KYCDocumentSerializer, KYCReviewNoteSerializer,
     ComplianceCheckSerializer, KYCApplicationReviewSerializer,
     KYCSettingsSerializer, KYCStatsSerializer, KYCPaymentSerializer,
-    KYCPaymentInitiateSerializer
+    KYCPaymentInitiateSerializer, DocumentNumberCheckSerializer
 )
 from mainapps.accounts.models import Address
 from mainapps.accounts.serializers import AddressSerializer
@@ -204,6 +204,59 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
             'address': AddressSerializer(address).data,
             'application': KYCApplicationSerializer(application).data
         })
+
+    @action(detail=True, methods=['post'])
+    def update_origin_details(self, request, pk=None):
+        """Add or update origin details for KYC application"""
+        application = self.get_object()
+
+        if application.status not in ['draft', 'submitted']:
+            return Response(
+                {'error': 'Cannot update origin details for this application'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if application.origin_details:
+            serializer = AddressSerializer(application.origin_details, data=request.data, partial=True)
+        else:
+            serializer = AddressSerializer(data=request.data)
+
+        serializer.is_valid(raise_exception=True)
+        address = serializer.save()
+
+        application.origin_details = address
+        application.save()
+
+        return Response({
+            'message': 'Origin details updated successfully',
+            'address': AddressSerializer(address).data,
+            'application': KYCApplicationSerializer(application).data
+        })
+
+    @action(detail=False, methods=['post'])
+    def check_document_number(self, request):
+        """Frontend helper: check if a document number is already in use before submitting the form."""
+        serializer = DocumentNumberCheckSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if data["is_unique"]:
+            return Response(
+                {
+                    "is_unique": True,
+                    "message": "Document number looks good and is not in use.",
+                    "duplicate_ids": [],
+                }
+            )
+
+        return Response(
+            {
+                "is_unique": False,
+                "message": "This document number is already linked to another KYC. Please double check or use a different document.",
+                "duplicate_ids": data["duplicate_ids"],
+            },
+            status=status.HTTP_200_OK,
+        )
     
     @action(detail=False, methods=['get'])
     def get_countries(self, request):
