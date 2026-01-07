@@ -69,6 +69,11 @@ jobs:
             KYC_APPLICATION_FEE_AMOUNT=${{ secrets.KYC_APPLICATION_FEE_AMOUNT }}
             KYC_APPLICATION_FEE_CURRENCY=${{ secrets.KYC_APPLICATION_FEE_CURRENCY }}
             KYC_APPLICATION_FEE_DESCRIPTION=${{ secrets.KYC_APPLICATION_FEE_DESCRIPTION }}
+            EXCHANGERATE_API_KEY=${{ secrets.EXCHANGERATE_API_KEY }}
+            FIXER_API_KEY=${{ secrets.FIXER_API_KEY }}
+            
+            
+
 
             EOF            
 

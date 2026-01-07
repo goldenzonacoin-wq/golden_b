@@ -602,6 +602,13 @@ class KYCPaymentViewSet(
                 },
                 status=status.HTTP_201_CREATED
             )
+        except ValidationError as exc:
+            logger.error("KYC payment validation error: %s", exc, exc_info=True)
+            print(f"[KYCPaymentViewSet.create] Validation error: {exc}")
+            return Response(
+                {'detail': exc.detail if hasattr(exc, 'detail') else str(exc)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         except Exception as exc:
             logger.exception("Unexpected error initializing KYC payment")
             print(f"[KYCPaymentViewSet.create] Unexpected error: {exc}")
@@ -642,48 +649,97 @@ class KYCPaymentViewSet(
         return converted_amount, target_currency
 
     def _convert_currency(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        """Convert amount using Flutterwave rates endpoint."""
-        secret_key = getattr(settings, 'FLUTTERWAVE_SECRET_KEY', None)
+        """Convert amount using external FX providers (not Flutterwave)."""
+        try:
+            return self._convert_currency_with_freecurrencyapi(amount, from_currency, to_currency)
+        except ValidationError:
+            pass
+        return self._convert_currency_with_fixer(amount, from_currency, to_currency)
+
+    def _convert_currency_with_freecurrencyapi(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        api_key = getattr(settings, "EXCHANGERATE_API_KEY", None)
+        if not api_key:
+            raise ValidationError("Freecurrencyapi API key is not configured.")
+
+        from_currency = (from_currency or "").upper()
+        to_currency = (to_currency or "").upper()
+        if not from_currency or not to_currency:
+            raise ValidationError("Both source and destination currencies are required.")
+
         try:
             response = requests.get(
-                f"{getattr(settings, 'FLUTTERWAVE_BASE_URL', 'https://api.flutterwave.com/v3').rstrip('/')}/rates",
+                "https://api.freecurrencyapi.com/v1/latest",
                 params={
-                    "from": from_currency,
-                    "to": to_currency,
-                    "amount": str(amount),
+                    "apikey": api_key,
+                    "base_currency": from_currency,
+                    "currencies": to_currency,
                 },
-                headers={
-                    "Authorization": f"Bearer {secret_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=30,
+                timeout=20,
             )
             data = response.json()
         except requests.RequestException as exc:
-            raise ValidationError(f"Unable to fetch conversion rate from Flutterwave: {exc}") from exc
+            logger.error("Error calling freecurrencyapi: %s", exc, exc_info=True)
+            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
         except ValueError as exc:
-            raise ValidationError("Received invalid response from Flutterwave rates API.") from exc
+            raise ValidationError("Received invalid response from freecurrencyapi.") from exc
 
-        if response.status_code >= 400 or data.get('status') != 'success':
-            raise ValidationError("Flutterwave currency conversion failed. Please try another currency.")
-
-        rate_data = data.get('data') or {}
-
-        destination_amount = (
-            rate_data.get('to', {}).get('amount')
-            or rate_data.get('destination_amount')
-            or rate_data.get('converted_amount')
-        )
-        if destination_amount is None:
-            raise ValidationError("Flutterwave response did not include a converted amount.")
+        rate = (data.get("data") or {}).get(to_currency)
+        if rate is None:
+            raise ValidationError(f"Exchange rate not found for {to_currency}.")
 
         try:
-            converted_decimal = Decimal(str(destination_amount))
+            amount_decimal = Decimal(str(amount))
+            converted_amount = (amount_decimal * Decimal(str(rate))).quantize(Decimal("0.01"))
         except Exception as exc:  # noqa: BLE001
-            raise ValidationError("Invalid converted amount returned by Flutterwave.") from exc
+            logger.error("Invalid conversion calculation from freecurrencyapi: %s", exc, exc_info=True)
+            raise ValidationError("Invalid exchange rate received from freecurrencyapi.") from exc
 
-        converted_decimal = converted_decimal.quantize(Decimal('0.01'))
-        return converted_decimal
+        return converted_amount
+
+    def _convert_currency_with_fixer(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        api_key = getattr(settings, "FIXER_API_KEY", None)
+        if not api_key:
+            raise ValidationError("Fixer API key is not configured on the server.")
+
+        from_currency = (from_currency or "").upper()
+        to_currency = (to_currency or "").upper()
+        if not from_currency or not to_currency:
+            raise ValidationError("Both source and destination currencies are required.")
+
+        try:
+            response = requests.get(
+                "https://data.fixer.io/api/latest",
+                params={
+                    "access_key": api_key,
+                    "symbols": f"{from_currency},{to_currency}",
+                },
+                timeout=20,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            logger.error("Error calling Fixer API: %s", exc, exc_info=True)
+            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
+        except ValueError as exc:
+            raise ValidationError("Received invalid response from Fixer API.") from exc
+
+        if not data.get("success", True):
+            error_info = data.get("error", {}).get("info") or "Fixer API error."
+            raise ValidationError(error_info)
+
+        rates = data.get("rates") or {}
+        from_rate = rates.get(from_currency)
+        to_rate = rates.get(to_currency)
+        if from_rate is None or to_rate is None:
+            raise ValidationError(f"Exchange rate not found for {to_currency}.")
+
+        try:
+            amount_decimal = Decimal(str(amount))
+            converted_amount = (amount_decimal * (Decimal(str(to_rate)) / Decimal(str(from_rate)))).quantize(Decimal("0.01"))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Invalid conversion calculation from Fixer API: %s", exc, exc_info=True)
+            raise ValidationError("Invalid exchange rate received from Fixer API.") from exc
+
+        return converted_amount
 
 
 
