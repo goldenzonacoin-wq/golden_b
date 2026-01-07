@@ -535,7 +535,7 @@ class KYCPaymentViewSet(
                 "redirect_url": redirect_url,
                 "customer": {
                     "email": user.email,
-                    "name": user.get_full_name() or user.email,
+                    "name": user.get_full_name or user.email,
                 },
                 "meta": {
                     "user_id": user.id,
