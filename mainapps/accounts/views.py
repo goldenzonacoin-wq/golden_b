@@ -7,9 +7,11 @@ from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import login, logout
 from django.db.models import Q
 from django.utils import timezone
+import logging
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 from subapps.emails.send_email import send_html_email
+from django.conf import settings
 from .models import User, UserProfile, VerificationCode, UserActivity, Organisation
 from .serializers import (
     AddressSerializer,
@@ -20,16 +22,21 @@ from .serializers import (
     SubRegionSerializer,
     UserProfileSerializer, UserUpdateSerializer, 
      UserActivitySerializer,
-    WalletConnectionSerializer, ReferralSerializer, OrganisationSerializer
+    WalletConnectionSerializer, ReferralSerializer, OrganisationSerializer,
+    KYCRewardRequestSerializer
 )
 from cities_light.models import Country, Region, SubRegion,City
 from .models import Address
 from rest_framework import generics
+from decimal import Decimal
+from mainapps.blockchain.kms_signer import KMSWeb3Signer
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+logger = logging.getLogger(__name__)
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -81,6 +88,70 @@ class UserViewSet(viewsets.ModelViewSet):
         )
         
         return Response({'message': 'Wallet connected successfully'})
+
+    @action(detail=False, methods=['post'], url_path='kyc-reward')
+    def kyc_reward(self, request):
+        """Submit wallet address and send KYC reward"""
+        user = request.user
+        if not user.is_kyc_verified:
+            return Response(
+                {'error': 'KYC approval required before claiming reward'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if user.has_been_kyc_rewarded:
+            return Response(
+                {'error': 'KYC reward already claimed'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = KYCRewardRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        wallet_address = serializer.validated_data['wallet_address']
+
+        if user.wallet_address and user.wallet_address.lower() != wallet_address.lower():
+            return Response(
+                {'error': 'Wallet address does not match your saved address'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if User.objects.filter(wallet_address=wallet_address).exclude(pk=user.pk).exists():
+            return Response(
+                {'error': 'Wallet address is already connected to another account'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            signer = KMSWeb3Signer()
+            reward_amount = Decimal(str(settings.KYC_REWARD_AMOUNT))
+            tx_hash = signer.send_token_transfer(wallet_address, reward_amount)
+        except Exception as exc:
+            logger.exception("Failed to send KYC reward for user %s", user.id)
+            return Response(
+                {'error': 'Failed to send KYC reward'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        user.wallet_address = wallet_address
+        user.has_been_kyc_rewarded = True
+        user.save(update_fields=['wallet_address', 'has_been_kyc_rewarded'])
+
+        UserActivity.objects.create(
+            user=user,
+            activity_type='kyc_reward',
+            description='KYC reward sent',
+            ip_address=request.META.get('REMOTE_ADDR', ''),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            metadata={'wallet_address': wallet_address, 'tx_hash': tx_hash}
+        )
+
+        return Response(
+            {
+                'success': True,
+                'wallet_address': wallet_address,
+                'tx_hash': tx_hash,
+                'amount': str(settings.KYC_REWARD_AMOUNT),
+            },
+            status=status.HTTP_200_OK
+        )
     
     @action(detail=False, methods=['post'])
     def apply_referral(self, request):

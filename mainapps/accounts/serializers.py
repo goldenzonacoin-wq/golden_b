@@ -8,6 +8,7 @@ from django.utils import timezone
 from djoser.serializers import UserCreateSerializer as BaseUserCreateSerializer
 from cities_light.models import Country, Region, SubRegion,City
 from .models import Address
+from web3 import Web3
 
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -75,10 +76,10 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         
         # Blockchain-specific data
         token['wallet_address'] = user.wallet_address
-        token['atc_balance'] = str(user.atc_balance) if user.atc_balance else '0'
         token['is_whale'] = user.is_whale
         token['is_verified'] = user.is_verified
         token['is_kyc_verified'] = user.is_kyc_verified
+        token['has_been_kyc_rewarded'] = user.has_been_kyc_rewarded
         
         # KYC status
         try:
@@ -107,10 +108,10 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             'role': user.role,
             'membership_tier': user.membership_tier,
             'wallet_address': user.wallet_address,
-            'atc_balance': str(user.atc_balance) if user.atc_balance else '0',
             'is_whale': user.is_whale,
             'is_verified': user.is_verified,
             'is_kyc_verified': user.is_kyc_verified,
+            'has_been_kyc_rewarded': user.has_been_kyc_rewarded,
             'phone_number': user.phone_number,
             'profile_id': profile.id if profile else None,
             'reputation_score': profile.reputation_score if profile else 0,
@@ -192,12 +193,12 @@ class MyUserSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'email', 'first_name', 'last_name', 'get_full_name',
             'role', 'membership_tier', 'wallet_address', 'wallet_address_short',
-            'atc_balance', 'is_whale', 'is_verified', 'is_kyc_verified',
-            'phone_number', 'date_of_birth', 'created_at', 'profile'
+             'is_whale', 'is_verified', 'is_kyc_verified',
+            'has_been_kyc_rewarded', 'phone_number', 'date_of_birth', 'created_at', 'profile'
         )
         read_only_fields = (
-            'id', 'get_full_name', 'atc_balance', 'is_whale', 
-            'is_verified', 'is_kyc_verified', 'created_at'
+            'id', 'get_full_name', 'is_whale', 
+            'is_verified', 'is_kyc_verified', 'has_been_kyc_rewarded', 'created_at'
         )
     
     def get_wallet_address_short(self, obj):
@@ -238,6 +239,15 @@ class WalletConnectionSerializer(serializers.Serializer):
     """Serializer for wallet connection"""
     wallet_address = serializers.CharField(max_length=42)
     signature = serializers.CharField()
+
+
+class KYCRewardRequestSerializer(serializers.Serializer):
+    wallet_address = serializers.CharField(max_length=42)
+
+    def validate_wallet_address(self, value):
+        if not Web3.is_address(value):
+            raise serializers.ValidationError("Invalid wallet address format")
+        return Web3.to_checksum_address(value)
     message = serializers.CharField()
     
     def validate_wallet_address(self, value):

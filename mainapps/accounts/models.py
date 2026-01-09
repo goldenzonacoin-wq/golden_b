@@ -153,7 +153,7 @@ class CustomUserManager(BaseUserManager):
 
 
 class User(AbstractUser, PermissionsMixin):
-    """Custom user model for ATC blockchain project"""
+    """Custom user model for DApp blockchain project"""
     
     email = models.EmailField(unique=True, blank=False, null=False)
     username = models.CharField(max_length=150, unique=True, blank=True)
@@ -193,10 +193,11 @@ class User(AbstractUser, PermissionsMixin):
     # Status fields
     is_verified = models.BooleanField(default=False)
     is_kyc_verified = models.BooleanField(default=False)
+    has_been_kyc_rewarded = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     
-    # ATC-specific roles
+    # smart contract-specific roles
     role = models.CharField(
         max_length=20,
         choices=ROLE_CHOICES,
@@ -208,13 +209,6 @@ class User(AbstractUser, PermissionsMixin):
         default="bronze"
     )
     
-    # Token holdings (for reference, actual balances come from blockchain)
-    atc_balance = models.DecimalField(
-        max_digits=20,
-        decimal_places=8,
-        default=0,
-        help_text="Cached ATC token balance"
-    )
     organisation = models.ForeignKey(
         'Organisation',
         on_delete=models.SET_NULL,
@@ -270,7 +264,7 @@ class User(AbstractUser, PermissionsMixin):
 
 
 class UserProfile(models.Model):
-    """Extended user profile for ATC community members"""
+    """Extended user profile for Dapp community members"""
     
     user = models.OneToOneField(
         User,
@@ -458,4 +452,3 @@ class Organisation(models.Model):
     
     def __str__(self):
         return self.name
-

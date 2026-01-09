@@ -12,7 +12,7 @@ import secrets
 class SmartContractService:
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(settings.ETHEREUM_RPC_URL))
-        self.contract_address = settings.ATC_TOKEN_CONTRACT_ADDRESS
+        self.contract_address = settings.TOKEN_CONTRACT_ADDRESS
         
         # Load ABI
         abi_path = os.path.join(settings.BASE_DIR, 'redux', 'context', 'ATCToken.json')
