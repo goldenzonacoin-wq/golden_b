@@ -194,7 +194,6 @@ def wallet_info(request):
     wallet_info = {
         'wallet_address': user.wallet_address,
         'has_wallet': bool(user.wallet_address),
-        'atc_balance': user.atc_balance,
         'session_active': session_active
     }
     
@@ -242,11 +241,6 @@ def create_transaction(request):
                 'error': 'Session account mismatch'
             }, status=status.HTTP_401_UNAUTHORIZED)
         
-        # Check balance (simplified - in production, check on-chain)
-        if user.atc_balance < amount:
-            return Response({
-                'error': 'Insufficient balance'
-            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Create transaction data (simplified)
         transaction_data = {

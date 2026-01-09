@@ -15,7 +15,7 @@ class SmartContractService:
         self.contract_address = settings.TOKEN_CONTRACT_ADDRESS
         
         # Load ABI
-        abi_path = os.path.join(settings.BASE_DIR, 'redux', 'context', 'ATCToken.json')
+        abi_path = os.path.join(settings.BASE_DIR, 'subapps', 'smart_contract', 'token_abi.json')
         with open(abi_path, 'r') as f:
             contract_data = json.load(f)
             self.contract_abi = contract_data['abi']

@@ -24,7 +24,7 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('first_name', 'last_name', 'sex', 'date_of_birth', 'phone_number')
         }),
         ('Blockchain', {
-            'fields': ('wallet_address', 'atc_balance')
+            'fields': ('wallet_address',)
         }),
         ('Permissions', {
             'fields': ('role', 'membership_tier', 'is_active', 'is_staff', 'is_superuser', 

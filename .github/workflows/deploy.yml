@@ -71,12 +71,17 @@ jobs:
             KYC_APPLICATION_FEE_DESCRIPTION=${{ secrets.KYC_APPLICATION_FEE_DESCRIPTION }}
             EXCHANGERATE_API_KEY=${{ secrets.EXCHANGERATE_API_KEY }}
             FIXER_API_KEY=${{ secrets.FIXER_API_KEY }}
-            
-            
-
-
+            TOKEN_CONTRACT_ADDRESS=${{ secrets.TOKEN_CONTRACT_ADDRESS }}
+            ETHEREUM_RPC_URL=${{ secrets.ETHEREUM_RPC_URL }}
+            KYC_REWARD_SENDER_ADDRESS=${{ secrets.KYC_REWARD_SENDER_ADDRESS }}
+            KYC_REWARD_TOKEN_CONTRACT_ADDRESS=${{ secrets.KYC_REWARD_TOKEN_CONTRACT_ADDRESS }}
+            KYC_REWARD_TOKEN_DECIMALS=${{ secrets.KYC_REWARD_TOKEN_DECIMALS }}
+            KYC_REWARD_AMOUNT=${{ secrets.KYC_REWARD_AMOUNT }}
+            KYC_REWARD_CHAIN_ID=${{ secrets.KYC_REWARD_CHAIN_ID }}
+            KYC_REWARD_GAS_LIMIT=${{ secrets.KYC_REWARD_GAS_LIMIT }}
+            KYC_REWARD_KMS_KEY_ID=${{ secrets.KYC_REWARD_KMS_KEY_ID }}
+            KYC_REWARD_KMS_REGION=${{ secrets.KYC_REWARD_KMS_REGION }}
             EOF            
-
 
       - name: Deploy with Docker Compose
         run: |

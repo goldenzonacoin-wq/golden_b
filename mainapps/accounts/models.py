@@ -252,7 +252,7 @@ class User(AbstractUser, PermissionsMixin):
     def is_whale(self):
         """Check if user is a whale (holds >5% of total supply)"""
         # This would be calculated based on actual blockchain data
-        return self.atc_balance > 50000000  # 5% of 1B tokens
+        return False
     
     def save(self, *args, **kwargs):
         if not self.username:

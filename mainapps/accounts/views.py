@@ -7,6 +7,7 @@ from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import login, logout
 from django.db.models import Q
 from django.utils import timezone
+from django.contrib.auth import get_user_model
 import logging
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
@@ -92,7 +93,7 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='kyc-reward')
     def kyc_reward(self, request):
         """Submit wallet address and send KYC reward"""
-        user = request.user
+        user =get_user_model().objects.get(pk=request.user.pk)
         if not user.is_kyc_verified:
             return Response(
                 {'error': 'KYC approval required before claiming reward'},
