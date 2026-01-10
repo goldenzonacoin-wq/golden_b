@@ -16,6 +16,11 @@ from .serializers import (
     UserStakeSerializer, StakeCreateSerializer, VestingScheduleSerializer,
     BlockchainEventSerializer, WalletStatsSerializer, NetworkStatsSerializer
 )
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from kms_signer import RewardDistributorService
+from django.core.exceptions import ValidationError
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -374,3 +379,30 @@ class AdminBlockchainEventListView(generics.ListAPIView):
     serializer_class = BlockchainEventSerializer
     permission_classes = [IsAdminUser]
     pagination_class = StandardResultsSetPagination
+
+
+
+class DistributeRewardView(APIView):
+    def post(self, request):
+        recipient = request.data.get('recipient')
+        amount = request.data.get('amount') 
+
+        if not recipient or not amount:
+            return Response({"error": "Missing recipient or amount"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            service = RewardDistributorService()
+            result = service.distribute_reward(
+                recipient=recipient,
+                amount_ether=Decimal(amount)
+            )
+            return Response({
+                "message": "Reward distributed successfully",
+                "transaction": result
+            }, status=status.HTTP_200_OK)
+
+        except ValueError as ve:
+            return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Reward distribution failed: {str(e)}")
+            return Response({"error": "Internal error during distribution"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

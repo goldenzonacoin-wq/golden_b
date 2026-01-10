@@ -3,7 +3,7 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key
 from eth_utils import keccak, to_checksum_address
 from django.conf import settings  
 
-KMS_KEY_ID = "e88e950-32f0-48b9-9574-8df48ae8df48ae8db68"       
+KMS_KEY_ID = ""       
 KMS_REGION = "us-east-1"                      
 
 kms_client = boto3.client("kms", region_name=KMS_REGION)
@@ -26,3 +26,6 @@ if __name__ == "__main__":
         print(f"→ Should match your reward wallet: 0xBCB1E2AF36013e8957D4D966df39875e85Ce4b2d")
     except Exception as e:
         print("Error:", str(e))
+
+
+# run python3 mainapps/blockchain/test_kms_address.py
