@@ -30,7 +30,7 @@ from cities_light.models import Country, Region, SubRegion,City
 from .models import Address
 from rest_framework import generics
 from decimal import Decimal
-from mainapps.blockchain.kms_signer import KMSWeb3Signer
+from mainapps.blockchain.kms_signer import RewardDistributorService
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20

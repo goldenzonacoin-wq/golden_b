@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from kms_signer import RewardDistributorService
+from ...kms_signer import RewardDistributorService
 from decimal import Decimal
 from web3 import Web3
 
@@ -26,3 +26,4 @@ class Command(BaseCommand):
 
 
 # run python manage.py send_test_reward --recipient public_address --amount 10
+
