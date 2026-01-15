@@ -2,8 +2,10 @@ from rest_framework import serializers
 from decimal import Decimal
 from .models import (
     BlockchainNetwork, TokenContract, WalletBalance, Transaction,
-    StakingPool, UserStake, VestingSchedule, BlockchainEvent
+    StakingPool, UserStake, VestingSchedule, BlockchainEvent,
+    TokenPurchase
 )
+from web3 import Web3
 
 
 class BlockchainNetworkSerializer(serializers.ModelSerializer):
@@ -146,6 +148,39 @@ class StakeCreateSerializer(serializers.Serializer):
         
         attrs['staking_pool'] = pool
         return attrs
+
+
+class TokenPurchaseSerializer(serializers.ModelSerializer):
+    """Serializer for token purchase records."""
+
+    class Meta:
+        model = TokenPurchase
+        fields = (
+            'id', 'user_id', 'wallet_address', 'token_amount',
+            'usd_price_per_token', 'usd_amount', 'charge_amount',
+            'currency', 'tx_ref', 'flw_ref', 'status', 'payment_link',
+            'paid_at', 'transfer_status', 'transfer_tx_hash',
+            'transfer_error', 'created_at', 'updated_at'
+        )
+
+
+class TokenPurchaseInitiateSerializer(serializers.Serializer):
+    """Serializer for initiating token purchases."""
+
+    token_amount = serializers.DecimalField(max_digits=30, decimal_places=18)
+    currency = serializers.CharField(max_length=10)
+    wallet_address = serializers.CharField(max_length=64)
+    redirect_url = serializers.URLField(required=False, allow_blank=True)
+
+    def validate_token_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Token amount must be greater than 0.")
+        return value
+
+    def validate_wallet_address(self, value):
+        if not Web3.is_address(value):
+            raise serializers.ValidationError("Invalid wallet address.")
+        return value
 
 
 class VestingScheduleSerializer(serializers.ModelSerializer):

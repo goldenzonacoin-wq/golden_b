@@ -2,7 +2,8 @@ from django.contrib import admin
 from django.utils.html import format_html
 from .models import (
     BlockchainNetwork, TokenContract, WalletBalance, Transaction,
-    StakingPool, UserStake, VestingSchedule, BlockchainEvent
+    StakingPool, UserStake, VestingSchedule, BlockchainEvent,
+    TokenPurchaseSettings, TokenPurchase
 )
 
 
@@ -107,3 +108,20 @@ class BlockchainEventAdmin(admin.ModelAdmin):
     def tx_hash_short(self, obj):
         return f"{obj.tx_hash[:10]}..."
     tx_hash_short.short_description = "Transaction Hash"
+
+
+@admin.register(TokenPurchaseSettings)
+class TokenPurchaseSettingsAdmin(admin.ModelAdmin):
+    list_display = ('token_price_usd', 'is_active', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at')
+
+
+@admin.register(TokenPurchase)
+class TokenPurchaseAdmin(admin.ModelAdmin):
+    list_display = (
+        'tx_ref', 'user_id', 'token_amount', 'usd_amount',
+        'currency', 'charge_amount', 'status', 'transfer_status', 'created_at'
+    )
+    list_filter = ('status', 'transfer_status', 'currency', 'created_at')
+    search_fields = ('tx_ref', 'flw_ref', 'wallet_address', 'user_id')
+    readonly_fields = ('created_at', 'updated_at')

@@ -4,6 +4,16 @@ from eth_account import Account
 from eth_account._utils.legacy_transactions import serializable_unsigned_transaction_from_dict
 from decimal import Decimal
 from django.conf import settings
+try:
+    from web3.middleware.proof_of_authority import ExtraDataToPOAMiddleware
+except ImportError:
+    try:
+        from web3.middleware import geth_poa_middleware
+    except ImportError:
+        from web3.middleware.geth_poa import geth_poa_middleware
+        ExtraDataToPOAMiddleware = None
+    else:
+        ExtraDataToPOAMiddleware = None
 import rlp
 from eth_utils import to_bytes
 import logging
@@ -20,6 +30,11 @@ class KmsTokenTransfer:
     def __init__(self):
         # Web3 setup
         self.w3 = Web3(Web3.HTTPProvider(settings.ETHEREUM_RPC_URL))
+        # Add POA middleware for chains with Proof of Authority
+        if ExtraDataToPOAMiddleware:
+            self.w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        else:
+            self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
         if not self.w3.is_connected():
             raise ConnectionError("Cannot connect to Ethereum RPC")
         
@@ -36,7 +51,7 @@ class KmsTokenTransfer:
         
         self.token_address = Web3.to_checksum_address(settings.TOKEN_CONTRACT_ADDRESS)
         
-        abi_path = os.path.join(settings.BASE_DIR, "subapps", "smart_contract", "gzc.json")
+        abi_path = os.path.join(settings.BASE_DIR, "subapps", "data", "atc_token.json")
 
         try:
             with open(abi_path, "r", encoding="utf-8") as abi_file:
@@ -187,14 +202,13 @@ class KmsTokenTransfer:
                 'value': 0,
                 'gas': 100000,
                 'gasPrice': gas_price,
-                'data': self.token_contract.encodeABI(fn_name='transfer', args=[recipient, amount_wei]),
+                'data': self.token_contract.functions.transfer(recipient, amount_wei).build_transaction({'from': self.kms_wallet})['data'],
                 'chainId': self.chain_id
             }
             
             logger.info(f"Nonce: {nonce}, Chain: {self.chain_id}")
             logger.info(f"Gas: {tx['gas']}, Price: {self.w3.from_wei(gas_price, 'gwei'):.6f} gwei")
             
-            # Serialize and hash transaction
             unsigned_tx = serializable_unsigned_transaction_from_dict(tx)
             tx_hash = unsigned_tx.hash()
             

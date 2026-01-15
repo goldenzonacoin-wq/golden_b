@@ -8,8 +8,10 @@ class Command(BaseCommand):
     help = 'Send tokens directly from KMS wallet (bypassing distributor)'
 
     def add_arguments(self, parser):
-        parser.add_argument('--recipient', required=True, help='Recipient address')
-        parser.add_argument('--amount', type=float, default=1.0, help='Amount in tokens')
+        parser.add_argument('recipient', nargs='?', help='Recipient address')
+        parser.add_argument('amount', nargs='?', type=float, help='Amount in tokens')
+        parser.add_argument('--recipient', dest='recipient_kw', help='Recipient address')
+        parser.add_argument('--amount', dest='amount_kw', type=float, help='Amount in tokens')
         parser.add_argument(
             '--purpose',
             type=str,
@@ -30,8 +32,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         service = KmsTokenTransfer()
         try:
-            recipient = options.get('recipient')
-            amount = options.get('amount')
+            recipient = options.get('recipient_kw') or options.get('recipient')
+            amount = options.get('amount_kw')
+            if amount is None:
+                amount = options.get('amount')
+            if amount is None:
+                amount = 1.0
 
             
             result = service.transfer_tokens(

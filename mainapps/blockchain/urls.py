@@ -4,6 +4,7 @@ from .views import (
     TokenContractListView,
     UserWalletBalanceView,
     UserTransactionListView,
+    TokenPurchaseListCreateView,
     StakingPoolListView,
     UserStakeListView,
     create_stake,
@@ -29,6 +30,7 @@ urlpatterns = [
     path('wallet/balance/', UserWalletBalanceView.as_view(), name='user-wallet-balance'),
     path('wallet/transactions/', UserTransactionListView.as_view(), name='user-transactions'),
     path('wallet/stats/', wallet_stats, name='user-wallet-stats'),
+    path('token-purchases/', TokenPurchaseListCreateView.as_view(), name='token-purchases'),
 
     # Staking endpoints
     path('staking/pools/', StakingPoolListView.as_view(), name='staking-pools'),

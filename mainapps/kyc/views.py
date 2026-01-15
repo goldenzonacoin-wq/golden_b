@@ -398,6 +398,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         serializer = KYCStatsSerializer(stats)
         return Response(serializer.data)
 
+    
 
 class KYCDocumentViewSet(viewsets.ModelViewSet):
     """KYC Document management ViewSet"""
@@ -790,54 +791,54 @@ class KYCPaymentViewSet(
 
 
 
-class FlutterwaveWebhookView(APIView):
-    """Receives payment events from Flutterwave."""
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+# class FlutterwaveWebhookView(APIView):
+#     """Receives payment events from Flutterwave."""
+#     authentication_classes = []
+#     permission_classes = [permissions.AllowAny]
 
-    def post(self, request, *args, **kwargs):
-        expected_signature = (
-            getattr(settings, 'FLUTTERWAVE_WEBHOOK_HASH', None)
-            or getattr(settings, 'FLUTTERWAVE_WEBHHOK_HASH', None)
-        )
-        received_signature = request.headers.get('verif-hash')
-        if expected_signature and received_signature != expected_signature:
-            return Response({'detail': 'Invalid webhook signature.'}, status=status.HTTP_403_FORBIDDEN)
+#     def post(self, request, *args, **kwargs):
+#         expected_signature = (
+#             getattr(settings, 'FLUTTERWAVE_WEBHOOK_HASH', None)
+#             or getattr(settings, 'FLUTTERWAVE_WEBHHOK_HASH', None)
+#         )
+#         received_signature = request.headers.get('verif-hash')
+#         if expected_signature and received_signature != expected_signature:
+#             return Response({'detail': 'Invalid webhook signature.'}, status=status.HTTP_403_FORBIDDEN)
 
-        payload = request.data
-        event_data = payload.get('data') or {}
-        tx_ref = event_data.get('tx_ref')
-        if not tx_ref:
-            return Response({'detail': 'Missing transaction reference.'}, status=status.HTTP_400_BAD_REQUEST)
+#         payload = request.data
+#         event_data = payload.get('data') or {}
+#         tx_ref = event_data.get('tx_ref')
+#         if not tx_ref:
+#             return Response({'detail': 'Missing transaction reference.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            payment = KYCPayment.objects.get(tx_ref=tx_ref)
-        except KYCPayment.DoesNotExist:
-            return Response({'detail': 'Payment not found, ignoring event.'}, status=status.HTTP_200_OK)
+#         try:
+#             payment = KYCPayment.objects.get(tx_ref=tx_ref)
+#         except KYCPayment.DoesNotExist:
+#             return Response({'detail': 'Payment not found, ignoring event.'}, status=status.HTTP_200_OK)
 
-        payment.last_webhook_payload = payload
-        event_status = event_data.get('status')
+#         payment.last_webhook_payload = payload
+#         event_status = event_data.get('status')
 
-        if event_status == 'successful':
-            charged_amount = event_data.get('charged_amount') or event_data.get('amount') or payment.amount
-            try:
-                charged_amount = Decimal(str(charged_amount))
-            except Exception:
-                charged_amount = Decimal('0')
+#         if event_status == 'successful':
+#             charged_amount = event_data.get('charged_amount') or event_data.get('amount') or payment.amount
+#             try:
+#                 charged_amount = Decimal(str(charged_amount))
+#             except Exception:
+#                 charged_amount = Decimal('0')
 
-            currency = event_data.get('currency')
-            if charged_amount >= payment.amount and currency == payment.currency:
-                payment.status = KYCPayment.Status.SUCCESSFUL
-                payment.paid_at = timezone.now()
-            else:
-                payment.status = KYCPayment.Status.FAILED
-            payment.flw_ref = event_data.get('flw_ref') or event_data.get('id')
-        elif event_status == 'failed':
-            payment.status = KYCPayment.Status.FAILED
-        elif event_status == 'cancelled':
-            payment.status = KYCPayment.Status.CANCELLED
-        else:
-            payment.status = KYCPayment.Status.PENDING
+#             currency = event_data.get('currency')
+#             if charged_amount >= payment.amount and currency == payment.currency:
+#                 payment.status = KYCPayment.Status.SUCCESSFUL
+#                 payment.paid_at = timezone.now()
+#             else:
+#                 payment.status = KYCPayment.Status.FAILED
+#             payment.flw_ref = event_data.get('flw_ref') or event_data.get('id')
+#         elif event_status == 'failed':
+#             payment.status = KYCPayment.Status.FAILED
+#         elif event_status == 'cancelled':
+#             payment.status = KYCPayment.Status.CANCELLED
+#         else:
+#             payment.status = KYCPayment.Status.PENDING
 
-        payment.save()
-        return Response({'status': 'received'})
+#         payment.save()
+#         return Response({'status': 'received'})

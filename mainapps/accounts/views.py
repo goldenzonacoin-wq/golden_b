@@ -121,9 +121,15 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            signer = KMSWeb3Signer()
             reward_amount = Decimal(str(settings.KYC_REWARD_AMOUNT))
-            tx_hash = signer.send_token_transfer(wallet_address, reward_amount)
+            from django.core.management import call_command
+            call_command(
+                'send_direct_transfer',
+                recipient=wallet_address,
+                amount=float(reward_amount),
+                purpose='kyc_reward',
+            )
+
         except Exception as exc:
             logger.exception("Failed to send KYC reward for user %s", user.id)
             return Response(
@@ -141,7 +147,7 @@ class UserViewSet(viewsets.ModelViewSet):
             description='KYC reward sent',
             ip_address=request.META.get('REMOTE_ADDR', ''),
             user_agent=request.META.get('HTTP_USER_AGENT', ''),
-            metadata={'wallet_address': wallet_address, 'tx_hash': tx_hash}
+            metadata={'wallet_address': wallet_address,}
         )
 
         return Response(

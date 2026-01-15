@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from django.core.validators import MinValueValidator
+from django.core.exceptions import ValidationError
 from decimal import Decimal
 import uuid
 
@@ -433,3 +434,86 @@ class BlockchainEvent(models.Model):
     
     def __str__(self):
         return f"{self.event_type} - Block {self.block_number} - {self.tx_hash[:10]}..."
+
+
+class TokenPurchaseSettings(models.Model):
+    """Admin-configurable token purchase settings."""
+
+    token_price_usd = models.DecimalField(
+        max_digits=20,
+        decimal_places=8,
+        default=Decimal('0'),
+        help_text="Token price in USD."
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'blockchain_token_purchase_settings'
+        verbose_name = 'Token Purchase Settings'
+        verbose_name_plural = 'Token Purchase Settings'
+
+    def save(self, *args, **kwargs):
+        if not self.pk and TokenPurchaseSettings.objects.exists():
+            raise ValidationError('Only one Token Purchase Settings instance is allowed')
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Token Purchase Settings - {self.token_price_usd} USD"
+
+
+class TokenPurchase(models.Model):
+    """Records token purchases initiated via Flutterwave."""
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        REVIEW = 'review', 'Review'
+        SUCCESSFUL = 'successful', 'Successful'
+        FAILED = 'failed', 'Failed'
+        CANCELLED = 'cancelled', 'Cancelled'
+
+    class TransferStatus(models.TextChoices):
+        NOT_STARTED = 'not_started', 'Not Started'
+        PROCESSING = 'processing', 'Processing'
+        SUCCESSFUL = 'successful', 'Successful'
+        FAILED = 'failed', 'Failed'
+
+    user_id = models.PositiveIntegerField(db_index=True)
+    wallet_address = models.CharField(max_length=64)
+    token_amount = models.DecimalField(max_digits=30, decimal_places=18)
+    usd_price_per_token = models.DecimalField(max_digits=20, decimal_places=8)
+    usd_amount = models.DecimalField(max_digits=20, decimal_places=2)
+    charge_amount = models.DecimalField(max_digits=20, decimal_places=2)
+    currency = models.CharField(max_length=10, default='USD')
+    tx_ref = models.CharField(max_length=120, unique=True)
+    flw_ref = models.CharField(max_length=120, blank=True, null=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING
+    )
+    payment_link = models.URLField(blank=True, null=True)
+    init_payload = models.JSONField(default=dict, blank=True)
+    last_webhook_payload = models.JSONField(default=dict, blank=True)
+    paid_at = models.DateTimeField(blank=True, null=True)
+    transfer_status = models.CharField(
+        max_length=20,
+        choices=TransferStatus.choices,
+        default=TransferStatus.NOT_STARTED
+    )
+    transfer_tx_hash = models.CharField(max_length=120, blank=True, null=True)
+    transfer_error = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'blockchain_token_purchase'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user_id', 'status']),
+            models.Index(fields=['tx_ref']),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} - {self.tx_ref} - {self.status}"

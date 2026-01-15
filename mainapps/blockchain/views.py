@@ -5,26 +5,27 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Sum, Count, Avg, Q
 from django.utils import timezone
+from django.conf import settings
 from decimal import Decimal
+from uuid import uuid4
+import requests
 from .models import (
     BlockchainNetwork, TokenContract, WalletBalance, Transaction,
-    StakingPool, UserStake, VestingSchedule, BlockchainEvent
+    StakingPool, UserStake, VestingSchedule, BlockchainEvent,
+    TokenPurchase, TokenPurchaseSettings
 )
 from .serializers import (
     BlockchainNetworkSerializer, TokenContractSerializer,
     WalletBalanceSerializer, TransactionSerializer, StakingPoolSerializer,
     UserStakeSerializer, StakeCreateSerializer, VestingScheduleSerializer,
-    BlockchainEventSerializer, WalletStatsSerializer, NetworkStatsSerializer
+    BlockchainEventSerializer, WalletStatsSerializer, NetworkStatsSerializer,
+    TokenPurchaseSerializer, TokenPurchaseInitiateSerializer
 )
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 from .kms_signer import KmsTokenTransfer
 from django.core.exceptions import ValidationError
 from web3 import Web3
 import logging
-
-from .kms_signer import KmsTokenTransfer
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,276 @@ class UserTransactionListView(generics.ListAPIView):
         return Transaction.objects.filter(
             Q(from_user=user) | Q(to_user=user)
         ).order_by('-created_at')
+
+
+class TokenPurchaseListCreateView(generics.ListCreateAPIView):
+    """List and initialize token purchases."""
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return TokenPurchase.objects.filter(user_id=self.request.user.id).order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return TokenPurchaseInitiateSerializer
+        return TokenPurchaseSerializer
+
+    def create(self, request, *args, **kwargs):
+        init_serializer = TokenPurchaseInitiateSerializer(data=request.data)
+        init_serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        purchase_settings = self._get_purchase_settings()
+        if not purchase_settings.is_active:
+            return Response(
+                {'detail': 'Token purchase is currently disabled.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            usd_price = Decimal(str(purchase_settings.token_price_usd))
+        except Exception:
+            usd_price = Decimal('0')
+
+        if usd_price <= 0:
+            return Response(
+                {'detail': 'Token purchase price is not configured.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        token_amount = init_serializer.validated_data['token_amount']
+        usd_amount = (token_amount * usd_price).quantize(Decimal("0.01"))
+        requested_currency = init_serializer.validated_data.get('currency')
+
+        secret_key = getattr(settings, 'FLUTTERWAVE_SECRET_KEY', None)
+        if not secret_key:
+            return Response(
+                {'detail': 'Flutterwave secret key is not configured on the server.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        public_key = (
+            getattr(settings, 'FLUTTERWAVE_PUBLIC_KEY', None)
+            or getattr(settings, 'FLUTTERWAVE_PUB_KEY', None)
+        )
+        if not public_key:
+            return Response(
+                {'detail': 'Flutterwave public key is not configured on the server.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        try:
+            amount, currency = self._determine_charge_amount(usd_amount, requested_currency)
+        except ValidationError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if amount <= 0:
+            return Response(
+                {'detail': 'Invalid token purchase amount configured.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        tx_ref = f"token-{user.id}-{uuid4().hex[:10]}"
+        redirect_url = init_serializer.validated_data.get('redirect_url') or getattr(
+            settings, 'FLUTTERWAVE_REDIRECT_URL', None
+        )
+        wallet_address = init_serializer.validated_data['wallet_address']
+
+        payload = {
+            "tx_ref": tx_ref,
+            "amount": float(amount),
+            "currency": currency,
+            "payment_options": "card,account,ussd,banktransfer",
+            "redirect_url": redirect_url,
+            "customer": {
+                "email": user.email,
+                "name": user.get_full_name or user.email,
+            },
+            "meta": {
+                "user_id": user.id,
+                "token_purchase": True,
+                "token_amount": str(token_amount),
+                "wallet_address": wallet_address,
+                "usd_amount": str(usd_amount),
+                "usd_price_per_token": str(usd_price),
+            },
+            "customizations": {
+                "title": getattr(settings, 'SITE_NAME', 'Token Purchase'),
+                "description": "Token purchase payment",
+            },
+            "public_key": public_key,
+        }
+
+        phone_number = getattr(getattr(user, 'profile', None), 'phone_number', None) or getattr(user, 'phone_number', None)
+        if phone_number:
+            payload["customer"]["phone_number"] = phone_number
+
+        base_url = getattr(settings, 'FLUTTERWAVE_BASE_URL', 'https://api.flutterwave.com/v3')
+        try:
+            gateway_response = requests.post(
+                f"{base_url.rstrip('/')}/payments",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+            gateway_response.raise_for_status()
+            response_data = gateway_response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.exception("Failed to initialize Flutterwave token purchase")
+            return Response(
+                {'detail': 'Unable to initialize payment at the moment.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        payment_data = response_data.get('data') if isinstance(response_data, dict) else {}
+        payment_link = payment_data.get('link')
+        flw_ref = payment_data.get('flw_ref') or payment_data.get('id')
+
+        if not payment_link:
+            logger.error("Flutterwave response missing payment link: %s", response_data)
+            return Response(
+                {'detail': 'Payment link not returned by gateway.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        purchase = TokenPurchase.objects.create(
+            user_id=user.id,
+            wallet_address=wallet_address,
+            token_amount=token_amount,
+            usd_price_per_token=usd_price,
+            usd_amount=usd_amount,
+            charge_amount=amount,
+            currency=currency,
+            tx_ref=tx_ref,
+            flw_ref=flw_ref,
+            status=TokenPurchase.Status.PENDING,
+            payment_link=payment_link,
+            init_payload={"request": payload, "response": response_data},
+        )
+
+        return Response(
+            {
+                'message': 'Token purchase initialized successfully.',
+                'purchase': TokenPurchaseSerializer(purchase).data,
+                'flutterwave_payload': payload,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    def _get_purchase_settings(self):
+        settings_obj, _ = TokenPurchaseSettings.objects.get_or_create()
+        return settings_obj
+
+    def _determine_charge_amount(self, usd_amount: Decimal, requested_currency: str):
+        base_currency = 'USD'
+        target_currency = (requested_currency or base_currency).upper()
+
+        if target_currency == base_currency:
+            return usd_amount, base_currency
+
+        converted_amount = self._convert_currency(
+            amount=usd_amount,
+            from_currency=base_currency,
+            to_currency=target_currency
+        )
+        return converted_amount, target_currency
+
+    def _convert_currency(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        try:
+            return self._convert_currency_with_freecurrencyapi(amount, from_currency, to_currency)
+        except ValidationError:
+            pass
+        return self._convert_currency_with_fixer(amount, from_currency, to_currency)
+
+    def _convert_currency_with_freecurrencyapi(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        api_key = getattr(settings, "EXCHANGERATE_API_KEY", None)
+        if not api_key:
+            raise ValidationError("Freecurrencyapi API key is not configured.")
+
+        from_currency = (from_currency or "").upper()
+        to_currency = (to_currency or "").upper()
+        if not from_currency or not to_currency:
+            raise ValidationError("Both source and destination currencies are required.")
+
+        try:
+            response = requests.get(
+                "https://api.freecurrencyapi.com/v1/latest",
+                params={
+                    "apikey": api_key,
+                    "base_currency": from_currency,
+                    "currencies": to_currency,
+                },
+                timeout=20,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            logger.error("Error calling freecurrencyapi: %s", exc, exc_info=True)
+            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
+        except ValueError as exc:
+            raise ValidationError("Received invalid response from freecurrencyapi.") from exc
+
+        rate = (data.get("data") or {}).get(to_currency)
+        if rate is None:
+            raise ValidationError(f"Exchange rate not found for {to_currency}.")
+
+        try:
+            amount_decimal = Decimal(str(amount))
+            converted_amount = (amount_decimal * Decimal(str(rate))).quantize(Decimal("0.01"))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Invalid conversion calculation from freecurrencyapi: %s", exc, exc_info=True)
+            raise ValidationError("Invalid exchange rate received from freecurrencyapi.") from exc
+
+        return converted_amount
+
+    def _convert_currency_with_fixer(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
+        api_key = getattr(settings, "FIXER_API_KEY", None)
+        if not api_key:
+            raise ValidationError("Fixer API key is not configured on the server.")
+
+        from_currency = (from_currency or "").upper()
+        to_currency = (to_currency or "").upper()
+        if not from_currency or not to_currency:
+            raise ValidationError("Both source and destination currencies are required.")
+
+        try:
+            response = requests.get(
+                "https://data.fixer.io/api/latest",
+                params={
+                    "access_key": api_key,
+                    "symbols": f"{from_currency},{to_currency}",
+                },
+                timeout=20,
+            )
+            data = response.json()
+        except requests.RequestException as exc:
+            logger.error("Error calling Fixer API: %s", exc, exc_info=True)
+            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
+        except ValueError as exc:
+            raise ValidationError("Received invalid response from Fixer API.") from exc
+
+        if not data.get("success", True):
+            error_info = data.get("error", {}).get("info") or "Fixer API error."
+            raise ValidationError(error_info)
+
+        rates = data.get("rates") or {}
+        from_rate = rates.get(from_currency)
+        to_rate = rates.get(to_currency)
+        if from_rate is None or to_rate is None:
+            raise ValidationError(f"Exchange rate not found for {to_currency}.")
+
+        try:
+            amount_decimal = Decimal(str(amount))
+            converted_amount = (amount_decimal * (Decimal(str(to_rate)) / Decimal(str(from_rate)))).quantize(Decimal("0.01"))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Invalid conversion calculation from Fixer API: %s", exc, exc_info=True)
+            raise ValidationError("Invalid exchange rate received from Fixer API.") from exc
+
+        return converted_amount
 
 
 class StakingPoolListView(generics.ListAPIView):
