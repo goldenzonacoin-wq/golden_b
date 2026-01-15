@@ -342,6 +342,20 @@ class TokenPurchaseListCreateView(generics.ListCreateAPIView):
         return converted_amount
 
 
+class TokenPurchaseSettingsView(APIView):
+    """Expose token purchase settings for the frontend."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        settings_obj, _ = TokenPurchaseSettings.objects.get_or_create()
+        return Response(
+            {
+                'token_price_usd': str(settings_obj.token_price_usd),
+                'is_active': settings_obj.is_active,
+            }
+        )
+
+
 class StakingPoolListView(generics.ListAPIView):
     """List available staking pools"""
     serializer_class = StakingPoolSerializer
