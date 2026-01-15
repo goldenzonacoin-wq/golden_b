@@ -2,163 +2,139 @@ from django.core.management.base import BaseCommand
 import boto3
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 from eth_utils import keccak, to_checksum_address
-from eth_keys import keys
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from web3 import Web3
 from django.conf import settings
-
-SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
 
 class Command(BaseCommand):
-    help = 'Verify KMS key address and test signing'
+    help = 'Setup and verify KMS wallet configuration'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--check-balance',
+            action='store_true',
+            help='Check current balances'
+        )
+        parser.add_argument(
+            '--derive-only',
+            action='store_true',
+            help='Only derive address, don\'t check balances'
+        )
 
     def handle(self, *args, **options):
-        self.stdout.write("=" * 80)
-        self.stdout.write("KMS ADDRESS VERIFICATION")
-        self.stdout.write("=" * 80)
-
-        # Your settings
-        kms_key_id = settings.KYC_REWARD_KMS_KEY_ID
-        kms_region = settings.KYC_REWARD_KMS_REGION
-        expected_address = settings.KYC_REWARD_SENDER_ADDRESS
-
-        self.stdout.write(f"\n📋 Configuration:")
-        self.stdout.write(f"   KMS Key ID: {kms_key_id}")
-        self.stdout.write(f"   KMS Region: {kms_region}")
-        self.stdout.write(f"   Expected Address: {expected_address}")
-
-        # Connect to KMS
-        kms_client = boto3.client("kms", region_name=kms_region)
-
-        # Get public key
-        self.stdout.write(f"\n🔑 Fetching KMS public key...")
-        response = kms_client.get_public_key(KeyId=kms_key_id)
-        public_key = load_der_public_key(response["PublicKey"])
-        public_numbers = public_key.public_numbers()
-
-        x = public_numbers.x.to_bytes(32, byteorder="big")
-        y = public_numbers.y.to_bytes(32, byteorder="big")
-
-        self.stdout.write(f"   Public key X: {x.hex()}")
-        self.stdout.write(f"   Public key Y: {y.hex()}")
-
-        # Derive Ethereum address
-        uncompressed = b"\x04" + x + y
-        hash1 = keccak(uncompressed)
-        actual_kms_address = to_checksum_address(hash1[-20:])
-
-        self.stdout.write(f"\n🔍 Address Derivation:")
-        self.stdout.write(f"   Uncompressed pubkey: 04{x.hex()}{y.hex()}")
-        self.stdout.write(f"   Keccak256 hash: {hash1.hex()}")
-        self.stdout.write(f"   Ethereum Address: {actual_kms_address}")
-
-        # Final comparison
-        self.stdout.write(f"\n" + "=" * 80)
-        self.stdout.write(f"RESULT:")
-        self.stdout.write(f"=" * 80)
-        self.stdout.write(f"KMS Key Controls:  {actual_kms_address}")
-        self.stdout.write(f"Expected Address:  {expected_address}")
+        self.stdout.write(self.style.SUCCESS('='*70))
+        self.stdout.write(self.style.SUCCESS('🔐 KMS WALLET SETUP'))
+        self.stdout.write(self.style.SUCCESS('='*70))
         
-        if actual_kms_address.lower() == expected_address.lower():
-            self.stdout.write(self.style.SUCCESS(f"\n✅ ADDRESSES MATCH - Configuration is correct!"))
-        else:
-            self.stdout.write(self.style.ERROR(f"\n❌ ADDRESS MISMATCH!"))
-            self.stdout.write(f"\n⚠️  ACTION REQUIRED:")
-            self.stdout.write(f"   Your KMS key controls: {actual_kms_address}")
-            self.stdout.write(f"   But settings expect:   {expected_address}")
-            self.stdout.write(f"\n   You need to either:")
-            self.stdout.write(f"   1. Update KYC_REWARD_SENDER_ADDRESS to {actual_kms_address}")
-            self.stdout.write(f"   2. Fund the KMS-controlled address: {actual_kms_address}")
-            self.stdout.write(f"   3. Use a different KMS key")
-
-        # Test signature
-        self.stdout.write(f"\n" + "=" * 80)
-        self.stdout.write(f"SIGNATURE TEST")
-        self.stdout.write(f"=" * 80)
-
-        test_message = b"Hello Ethereum!"
-        test_hash = keccak(test_message)
-        self.stdout.write(f"Test message: {test_message.decode()}")
-        self.stdout.write(f"Test hash: {test_hash.hex()}")
-
-        # Test DIGEST mode
-        self.stdout.write(f"\n🔐 Test 1: DIGEST mode (KMS applies SHA256)")
         try:
-            sign_response = kms_client.sign(
-                KeyId=kms_key_id,
-                Message=test_hash,
-                MessageType="DIGEST",
-                SigningAlgorithm="ECDSA_SHA_256",
+            # Derive address from KMS
+            kms = boto3.client(
+                'kms',
+                region_name=settings.KYC_REWARD_KMS_REGION,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
             )
             
-            r, s = decode_dss_signature(sign_response['Signature'])
-            if s > SECP256K1_N // 2:
-                s = SECP256K1_N - s
+            response = kms.get_public_key(KeyId=settings.KYC_REWARD_KMS_KEY_ID)
+            public_key = load_der_public_key(response["PublicKey"])
+            public_numbers = public_key.public_numbers()
             
-            self.stdout.write(f"   Signature r: {hex(r)[:20]}...")
-            self.stdout.write(f"   Signature s: {hex(s)[:20]}...")
+            x = public_numbers.x.to_bytes(32, byteorder="big")
+            y = public_numbers.y.to_bytes(32, byteorder="big")
             
-            # Try recovery against keccak256 hash
-            self.stdout.write(f"\n   Recovery against keccak256(message):")
-            digest_works = False
-            for v in [0, 1]:
+            derived_address = to_checksum_address(keccak(x + y)[-20:])
+            
+            self.stdout.write(f"\n📋 Configuration:")
+            self.stdout.write(f"KMS Key ID:        {settings.KYC_REWARD_KMS_KEY_ID}")
+            self.stdout.write(f"AWS Region:        {settings.KYC_REWARD_KMS_REGION}")
+            self.stdout.write(f"Chain ID:          {settings.KYC_REWARD_CHAIN_ID}")
+            self.stdout.write(f"\n🔑 Derived Address: {derived_address}")
+            
+            # Check if it matches settings
+            configured_address = getattr(settings, 'KMS_SIGNER_SENDER_ADDRESS', None)
+            if configured_address:
+                if configured_address.lower() == derived_address.lower():
+                    self.stdout.write(self.style.SUCCESS("✅ Matches configured address"))
+                else:
+                    self.stdout.write(self.style.ERROR(
+                        f"❌ MISMATCH! Configured: {configured_address}"
+                    ))
+                    self.stdout.write(self.style.WARNING(
+                        f"\n⚠️  Update KMS_SIGNER_SENDER_ADDRESS to: {derived_address}"
+                    ))
+            else:
+                self.stdout.write(self.style.WARNING(
+                    "⚠️  KMS_SIGNER_SENDER_ADDRESS not set in settings"
+                ))
+            
+            if options['derive_only']:
+                return
+            
+            # Check balances
+            if options['check_balance'] or not options['derive_only']:
+                w3 = Web3(Web3.HTTPProvider(settings.ETHEREUM_RPC_URL))
+                
+                if not w3.is_connected():
+                    self.stdout.write(self.style.ERROR("\n❌ Cannot connect to RPC"))
+                    return
+                
+                chain_id = w3.eth.chain_id
+                self.stdout.write(f"\n🌐 Network: Chain ID {chain_id}")
+                
+                # ETH balance
+                eth_wei = w3.eth.get_balance(derived_address)
+                eth_balance = float(Web3.from_wei(eth_wei, 'ether'))
+                
+                self.stdout.write(f"\n💰 Balances:")
+                self.stdout.write(f"ETH:              {eth_balance:.6f}")
+                
+                # Token balance
                 try:
-                    sig = keys.Signature(vrs=(v, r, s))
-                    recovered = sig.recover_public_key_from_msg_hash(test_hash)
-                    recovered_addr = recovered.to_checksum_address()
-                    
-                    if recovered_addr == actual_kms_address:
-                        self.stdout.write(self.style.SUCCESS(f"   v={v}: {recovered_addr} ✅ MATCHES!"))
-                        digest_works = True
-                    else:
-                        self.stdout.write(f"   v={v}: {recovered_addr}")
+                    token_abi = [
+                        {
+                            "inputs": [{"name": "account", "type": "address"}],
+                            "name": "balanceOf",
+                            "outputs": [{"name": "", "type": "uint256"}],
+                            "stateMutability": "view",
+                            "type": "function"
+                        }
+                    ]
+                    token = w3.eth.contract(
+                        address=Web3.to_checksum_address(settings.TOKEN_CONTRACT_ADDRESS),
+                        abi=token_abi
+                    )
+                    token_wei = token.functions.balanceOf(derived_address).call()
+                    token_balance = float(token_wei / 10**18)
+                    self.stdout.write(f"Tokens:           {token_balance:.4f}")
                 except Exception as e:
-                    self.stdout.write(f"   v={v}: Failed - {e}")
-            
-            if not digest_works:
-                self.stdout.write(self.style.WARNING(f"   ❌ DIGEST mode doesn't work for Ethereum"))
+                    self.stdout.write(f"Tokens:           Error - {e}")
+                
+                # Funding instructions
+                if eth_balance < 0.001:
+                    self.stdout.write(self.style.WARNING(
+                        f"\n⚠️  LOW ETH - Need to fund for gas!"
+                    ))
+                    
+                    faucets = {
+                        84532: [
+                            'https://www.alchemy.com/faucets/base-sepolia',
+                            'https://faucet.quicknode.com/base/sepolia'
+                        ],
+                        80002: [
+                            'https://faucet.polygon.technology/'
+                        ]
+                    }
+                    
+                    if chain_id in faucets:
+                        self.stdout.write(f"\n🚰 Get testnet ETH from:")
+                        for faucet in faucets[chain_id]:
+                            self.stdout.write(f"   • {faucet}")
+                        self.stdout.write(f"\n📋 Address: {derived_address}")
+                else:
+                    self.stdout.write(self.style.SUCCESS(
+                        "\n✅ ETH balance sufficient for gas"
+                    ))
             
         except Exception as e:
-            self.stdout.write(self.style.ERROR(f"   ❌ DIGEST mode failed: {e}"))
-
-        # Test MESSAGE mode
-        self.stdout.write(f"\n🔐 Test 2: MESSAGE mode (no additional hashing)")
-        try:
-            sign_response = kms_client.sign(
-                KeyId=kms_key_id,
-                Message=test_hash,
-                MessageType="MESSAGE",
-                SigningAlgorithm="ECDSA_SHA_256",
-            )
-            
-            r, s = decode_dss_signature(sign_response['Signature'])
-            if s > SECP256K1_N // 2:
-                s = SECP256K1_N - s
-            
-            self.stdout.write(f"   Signature r: {hex(r)[:20]}...")
-            self.stdout.write(f"   Signature s: {hex(s)[:20]}...")
-            
-            # Try recovery
-            self.stdout.write(f"\n   Recovery against keccak256(message):")
-            message_works = False
-            for v in [0, 1]:
-                try:
-                    sig = keys.Signature(vrs=(v, r, s))
-                    recovered = sig.recover_public_key_from_msg_hash(test_hash)
-                    recovered_addr = recovered.to_checksum_address()
-                    
-                    if recovered_addr == actual_kms_address:
-                        self.stdout.write(self.style.SUCCESS(f"   v={v}: {recovered_addr} ✅ MATCHES! USE MESSAGE MODE"))
-                        message_works = True
-                    else:
-                        self.stdout.write(f"   v={v}: {recovered_addr}")
-                except Exception as e:
-                    self.stdout.write(f"   v={v}: Failed - {e}")
-            
-            if message_works:
-                self.stdout.write(self.style.SUCCESS(f"\n✅ MESSAGE mode works! Update your code to use MessageType='MESSAGE'"))
-            
-        except Exception as e:
-            self.stdout.write(f"   ⚠️ MESSAGE mode not supported: {e}")
-
-        self.stdout.write(f"\n" + "=" * 80)
+            self.stdout.write(self.style.ERROR(f'\n❌ Error: {e}'))
+            raise

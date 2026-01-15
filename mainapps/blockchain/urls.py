@@ -15,7 +15,9 @@ from .views import (
     network_stats,
     AdminTransactionListView,
     AdminBlockchainEventListView,
+    TokenTransferView
 )
+
 
 urlpatterns = [
     # General endpoints
@@ -42,4 +44,7 @@ urlpatterns = [
     # Admin endpoints
     path('admin/transactions/', AdminTransactionListView.as_view(), name='admin-transactions'),
     path('admin/events/', AdminBlockchainEventListView.as_view(), name='admin-blockchain-events'),
+
+    #KMS Token Transfer endpoint
+    path('token-transfer/', TokenTransferView.as_view(), name='kms-token-transfer'),
 ]

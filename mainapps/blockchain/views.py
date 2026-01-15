@@ -19,8 +19,14 @@ from .serializers import (
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-# from .kms_signer import RewardDistributorService
+from .kms_signer import KmsTokenTransfer
 from django.core.exceptions import ValidationError
+from web3 import Web3
+import logging
+
+from .kms_signer import KmsTokenTransfer
+
+logger = logging.getLogger(__name__)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -382,27 +388,45 @@ class AdminBlockchainEventListView(generics.ListAPIView):
 
 
 
-# class DistributeRewardView(APIView):
-#     def post(self, request):
-#         recipient = request.data.get('recipient')
-#         amount = request.data.get('amount') 
 
-#         if not recipient or not amount:
-#             return Response({"error": "Missing recipient or amount"}, status=status.HTTP_400_BAD_REQUEST)
-
-#         try:
-#             service = RewardDistributorService()
-#             result = service.distribute_reward(
-#                 recipient=recipient,
-#                 amount_ether=Decimal(amount)
-#             )
-#             return Response({
-#                 "message": "Reward distributed successfully",
-#                 "transaction": result
-#             }, status=status.HTTP_200_OK)
-
-#         except ValueError as ve:
-#             return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
-#         except Exception as e:
-#             logger.error(f"Reward distribution failed: {str(e)}")
-#             return Response({"error": "Internal error during distribution"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class TokenTransferView(APIView):
+    def post(self, request):
+        recipient = request.data.get('recipient')
+        amount = request.data.get('amount')
+        
+        if not recipient or not amount:
+            return Response(
+                {"error": "Missing recipient or amount"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            recipient = Web3.to_checksum_address(recipient)
+            
+            service = KmsTokenTransfer()  
+            result = service.transfer_tokens(  
+                recipient=recipient,
+                amount_tokens=float(Decimal(amount))  
+            )
+            
+            return Response({
+                "message": "Tokens transferred successfully",
+                "transaction": {
+                    "tx_hash": result['tx_hash'],
+                    "explorer_url": result['explorer_url'],
+                    "amount": result['amount'],
+                    "recipient": result['recipient']
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except ValueError as ve:
+            return Response(
+                {"error": str(ve)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"Transfer failed: {str(e)}")
+            return Response(
+                {"error": "Internal error during transfer"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
