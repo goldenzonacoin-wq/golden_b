@@ -2,6 +2,7 @@ import logging
 from uuid import uuid4
 
 import requests
+from subapps.emails.send_email import send_html_email
 from rest_framework import viewsets, status, permissions, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -174,6 +175,29 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         serializer = KYCApplicationSerializer(application)
         return Response(serializer.data)
     
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminOrSuperUser], url_path="unsubmit-by-email")
+    def unsubmit_application_by_email(self, request):
+        """
+        Move a user's application back to draft using their email instead of application ID.
+        """
+        email = (request.data.get("email") or "").strip()
+        if not email:
+            return Response({'detail': 'Email is required to unsubmit an application.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = get_user_model().objects.get(email__iexact=email)
+        except get_user_model().DoesNotExist:
+            return Response({'detail': 'No user found with that email.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            application = KYCApplication.objects.get(user=user)
+        except KYCApplication.DoesNotExist:
+            return Response({'detail': 'No KYC application found for that user.'}, status=status.HTTP_404_NOT_FOUND)
+
+        reviewer = self._resolve_request_user() or request.user
+        return self._perform_unsubmit(application, reviewer, request.data.get("reason"))
+
     @action(detail=True, methods=['post', ])
     def update_address(self, request, pk=None):
         """Add or update address for KYC application"""
@@ -399,6 +423,64 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     
+    def _perform_unsubmit(self, application: KYCApplication, reviewer, reason: str):
+        """
+        Common unsubmit logic shared across endpoints.
+        """
+        clean_reason = (reason or "").strip()
+        if not clean_reason:
+            return Response({'detail': 'Reason is required to unsubmit an application.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if application.status == KYCApplication.Status.DRAFT:
+            return Response({'detail': 'Application is already in draft state.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        application.status = KYCApplication.Status.DRAFT
+        application.reviewed_by = None
+        application.reviewed_at = None
+        application.rejection_reason = clean_reason
+        application.review_notes = None
+        application.save()
+
+        KYCReviewNote.objects.create(
+            kyc_application=application,
+            reviewer=reviewer,
+            note=f"Unsubmitted for user corrections: {clean_reason}",
+            is_internal=False,
+        )
+
+        try:
+            subject = "KYC requires updates"
+            message = f"Your KYC application was sent back for edits. Reason: {clean_reason}"
+            send_html_email(
+                subject=subject,
+                message=message,
+                to_email=[application.user.email],
+                html_file="kyc/unsubmitted.html",
+                extra_context={"reason": clean_reason, "application": application},
+            )
+        except Exception:
+            logger.exception("Failed to send unsubmit notice to %s", application.user.email)
+
+        return Response(
+            {
+                'message': 'Application moved back to draft for user corrections.',
+                'application': KYCApplicationSerializer(application).data,
+            }
+        )
+
+
+    def _resolve_request_user(self):
+        user = getattr(self.request, "user", None)
+        if not user or not getattr(user, "is_authenticated", False):
+            return None
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return user
+        try:
+            return get_user_model().objects.get(id=user_id)
+        except get_user_model().DoesNotExist:
+            return user
+
 
 class KYCDocumentViewSet(viewsets.ModelViewSet):
     """KYC Document management ViewSet"""
