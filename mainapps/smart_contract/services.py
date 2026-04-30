@@ -12,13 +12,13 @@ import secrets
 class SmartContractService:
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(settings.ETHEREUM_RPC_URL))
-        self.contract_address = settings.TOKEN_CONTRACT_ADDRESS
+        self.contract_address = Web3.to_checksum_address(settings.TOKEN_CONTRACT_ADDRESS)
         
         # Load ABI
-        abi_path = os.path.join(settings.BASE_DIR, 'subapps', 'smart_contract', 'token_abi.json')
+        abi_path = os.path.join(settings.BASE_DIR, 'subapps', 'smart_contract', 'gzc.json')
         with open(abi_path, 'r') as f:
             contract_data = json.load(f)
-            self.contract_abi = contract_data['abi']
+            self.contract_abi = contract_data['abi'] if isinstance(contract_data, dict) else contract_data
         
         self.contract = self.w3.eth.contract(
             address=self.contract_address,

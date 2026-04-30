@@ -271,6 +271,8 @@ class KmsTokenTransfer:
     
     def _get_explorer_url(self, tx_hash):
         """Get block explorer URL for transaction"""
+        if self.chain_id == 137:
+            return f"https://polygonscan.com/tx/{tx_hash}"
         if self.chain_id == 80002:
             return f"https://amoy.polygonscan.com/tx/{tx_hash}"
         elif self.chain_id == 84532:

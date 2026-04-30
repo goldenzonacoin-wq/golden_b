@@ -4,6 +4,7 @@ from django.utils import timezone
 from cities_light.models import Country
 from django.core.files.base import ContentFile
 from mainapps.accounts.models import Address
+from mainapps.accounts.models import validate_wallet_address as validate_account_wallet_address
 from .models import (
     KYCApplication, KYCDocument, KYCReviewNote, 
     ComplianceCheck, KYCSettings, KYCPayment
@@ -506,38 +507,57 @@ class KYCSettingsSerializer(serializers.ModelSerializer):
 class KYCPaymentSerializer(serializers.ModelSerializer):
     """Serializer for initiating and viewing KYC payments"""
     is_successful = serializers.BooleanField(read_only=True)
+    swap_url = serializers.SerializerMethodField()
 
     class Meta:
         model = KYCPayment
         fields = (
             'id', 'tx_ref', 'flw_ref', 'amount', 'currency', 'status',
-            'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
-            'payment_rejection_reason', 'created_at', 'updated_at', 'is_successful'
+            'payer_wallet_address', 'collection_wallet_address', 'required_token_amount',
+            'token_price_usd', 'token_symbol', 'token_address', 'token_decimals',
+            'chain_id', 'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
+            'payment_rejection_reason', 'payment_tx_hash', 'verified_at',
+            'verification_details', 'created_at', 'updated_at', 'is_successful', 'swap_url'
         )
         read_only_fields = (
             'id', 'tx_ref', 'flw_ref', 'amount', 'currency', 'status',
-            'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
-            'payment_rejection_reason', 'created_at', 'updated_at', 'is_successful'
+            'payer_wallet_address', 'collection_wallet_address', 'required_token_amount',
+            'token_price_usd', 'token_symbol', 'token_address', 'token_decimals',
+            'chain_id', 'payment_link', 'paid_at', 'payment_receipt', 'payment_confirmed',
+            'payment_rejection_reason', 'payment_tx_hash', 'verified_at',
+            'verification_details', 'created_at', 'updated_at', 'is_successful', 'swap_url'
         )
+
+    def get_swap_url(self, obj):
+        return (obj.init_payload or {}).get('swap_url')
 
 
 class KYCPaymentInitiateSerializer(serializers.Serializer):
-    """Serializer used when starting a Flutterwave payment."""
-    redirect_url = serializers.URLField(
-        required=False,
-        help_text="Where Flutterwave should redirect the user after payment."
-    )
-    currency = serializers.CharField(
-        required=False,
-        max_length=10,
-        help_text="Preferred payment currency (e.g. USD, NGN, GHS)."
+    """Serializer used when starting an on-chain KYC payment session."""
+
+    wallet_address = serializers.CharField(
+        max_length=42,
+        help_text="The connected wallet that will send the GZC payment.",
     )
 
-    def validate_currency(self, value):
-        value = value.upper()
-        if not value.isalpha():
-            raise serializers.ValidationError("Currency must contain only alphabetic characters.")
+    def validate_wallet_address(self, value):
+        try:
+            validate_account_wallet_address(value)
+        except Exception as exc:  # noqa: BLE001
+            raise serializers.ValidationError(str(exc)) from exc
         return value
+
+
+class KYCPaymentVerifySerializer(serializers.Serializer):
+    """Serializer used when confirming an on-chain KYC payment transfer."""
+
+    tx_hash = serializers.CharField(max_length=120)
+
+    def validate_tx_hash(self, value):
+        tx_hash = value.strip()
+        if not re.match(r"^0x[a-fA-F0-9]{64}$", tx_hash):
+            raise serializers.ValidationError("Enter a valid transaction hash.")
+        return tx_hash
 
 
 class KYCStatsSerializer(serializers.Serializer):

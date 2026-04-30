@@ -476,7 +476,7 @@ def payment_receipt_path(instance, filename):
 
 
 class KYCPayment(models.Model):
-    """Records one-time Flutterwave payments for KYC."""
+    """Records on-chain KYC payment requirements and verified transfers."""
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
@@ -494,6 +494,22 @@ class KYCPayment(models.Model):
     flw_ref = models.CharField(max_length=120, blank=True, null=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=10, default='USD')
+    payer_wallet_address = models.CharField(max_length=42, blank=True, null=True)
+    collection_wallet_address = models.CharField(max_length=42, blank=True, null=True)
+    required_token_amount = models.DecimalField(
+        max_digits=30,
+        decimal_places=18,
+        default=0,
+    )
+    token_price_usd = models.DecimalField(
+        max_digits=20,
+        decimal_places=8,
+        default=0,
+    )
+    token_symbol = models.CharField(max_length=20, default='GZC')
+    token_address = models.CharField(max_length=42, blank=True, null=True)
+    token_decimals = models.PositiveIntegerField(default=18)
+    chain_id = models.PositiveIntegerField(default=137)
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -506,6 +522,9 @@ class KYCPayment(models.Model):
     payment_receipt = models.FileField(upload_to=payment_receipt_path, blank=True, null=True)
     payment_confirmed = models.BooleanField(default=False)
     payment_rejection_reason = models.TextField(blank=True, null=True)
+    payment_tx_hash = models.CharField(max_length=120, blank=True, null=True)
+    verified_at = models.DateTimeField(blank=True, null=True)
+    verification_details = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

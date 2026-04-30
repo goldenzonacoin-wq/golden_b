@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import requests
 from subapps.emails.send_email import send_html_email
+from web3 import Web3
 from rest_framework import viewsets, status, permissions, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -17,6 +18,7 @@ from rest_framework.views import APIView
 from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import ValidationError
+from mainapps.blockchain.models import TokenPurchaseSettings
 from .models import KYCApplication, KYCDocument, KYCPayment, KYCReviewNote, ComplianceCheck, KYCSettings
 from .serializers import (
     KYCApplicationSerializer, KYCApplicationCreateSerializer,
@@ -24,7 +26,7 @@ from .serializers import (
     KYCDocumentSerializer, KYCReviewNoteSerializer,
     ComplianceCheckSerializer, KYCApplicationReviewSerializer,
     KYCSettingsSerializer, KYCStatsSerializer, KYCPaymentSerializer,
-    KYCPaymentInitiateSerializer, DocumentNumberCheckSerializer
+    KYCPaymentInitiateSerializer, KYCPaymentVerifySerializer, DocumentNumberCheckSerializer
 )
 from mainapps.accounts.models import Address
 from mainapps.accounts.serializers import AddressSerializer
@@ -92,14 +94,34 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         """Set user as the owner of the KYC application"""
         user_id = self.request.user.id
         if KYCApplication.objects.filter(user_id=user_id).exists():
-            raise 
+            raise ValidationError({'detail': 'You already have a KYC application.'})
         user = get_user_model().objects.get(id=user_id)
+        self._ensure_payment_completed(user)
         serializer.save(user=user)
+
+    def perform_update(self, serializer):
+        application = self.get_object()
+        request_user = get_user_model().objects.get(id=self.request.user.id)
+        if not request_user.is_staff:
+            self._ensure_payment_completed(request_user)
+        serializer.save()
+
+    def _ensure_payment_completed(self, user):
+        latest_payment = (
+            KYCPayment.objects.filter(user=user)
+            .order_by('-created_at')
+            .first()
+        )
+        if not latest_payment or latest_payment.status != KYCPayment.Status.SUCCESSFUL:
+            raise ValidationError(
+                {'detail': 'Complete the on-chain KYC payment before continuing your application.'}
+            )
       
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
         """Submit KYC application for review"""
         application = self.get_object()
+        self._ensure_payment_completed(application.user)
         
         if application.status != 'draft':
             return Response(
@@ -147,6 +169,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
     def upload_documents(self, request, pk=None):
         """Upload KYC documents"""
         application = self.get_object()
+        self._ensure_payment_completed(application.user)
         
         if application.status not in ['draft', 'submitted']:
             return Response(
@@ -202,6 +225,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
     def update_address(self, request, pk=None):
         """Add or update address for KYC application"""
         application = self.get_object()
+        self._ensure_payment_completed(application.user)
         
         if application.status not in ['draft', 'submitted']:
             return Response(
@@ -233,6 +257,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
     def update_origin_details(self, request, pk=None):
         """Add or update origin details for KYC application"""
         application = self.get_object()
+        self._ensure_payment_completed(application.user)
 
         if application.status not in ['draft', 'submitted']:
             return Response(
@@ -592,7 +617,7 @@ class KYCPaymentViewSet(
     mixins.RetrieveModelMixin,
     viewsets.GenericViewSet
 ):
-    """Handle initialization and retrieval of KYC payment attempts."""
+    """Handle initialization and verification of on-chain KYC payments."""
     serializer_class = KYCPaymentSerializer
     permission_classes = [IsAuthenticated]
 
@@ -601,11 +626,8 @@ class KYCPaymentViewSet(
 
     def create(self, request, *args, **kwargs):
         try:
-            user = request.user
-            user = get_user_model().objects.get(id=user.id)
-
-
-            existing_payment = KYCPayment.objects.filter(user=user).order_by('-created_at').first()
+            user = get_user_model().objects.get(id=request.user.id)
+            existing_payment = self.get_queryset().first()
             if existing_payment and existing_payment.status == KYCPayment.Status.SUCCESSFUL:
                 return Response(
                     {
@@ -617,133 +639,78 @@ class KYCPaymentViewSet(
 
             init_serializer = KYCPaymentInitiateSerializer(data=request.data)
             init_serializer.is_valid(raise_exception=True)
-            redirect_url = init_serializer.validated_data.get('redirect_url') or getattr(settings, 'FLUTTERWAVE_REDIRECT_URL', None)
-            requested_currency = init_serializer.validated_data.get('currency')
-
-            secret_key = getattr(settings, 'FLUTTERWAVE_SECRET_KEY', None)
-            if not secret_key:
-                return Response(
-                    {'detail': 'Flutterwave secret key is not configured on the server.'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            public_key = (
-                getattr(settings, 'FLUTTERWAVE_PUBLIC_KEY', None)
-                or getattr(settings, 'FLUTTERWAVE_PUB_KEY', None)
-            )
-            if not public_key:
-                return Response(
-                    {'detail': 'Flutterwave public key is not configured on the server.'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            amount, currency = self._determine_charge_amount(requested_currency)
-            if amount <= 0:
-                return Response(
-                    {'detail': 'Invalid KYC payment amount configured.'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            tx_ref = f"kyc-{user.id}-{uuid4().hex[:10]}"
-
-            payload = {
-                "tx_ref": tx_ref,
-                "amount": float(amount),
-                "currency": currency,
-                "payment_options": "card,account,ussd,banktransfer",
-                "redirect_url": redirect_url,
-                "customer": {
-                    "email": user.email,
-                    "name": user.get_full_name or user.email,
-                },
-                "meta": {
-                    "user_id": user.id,
-                    "kyc_payment": True,
-                },
-                "customizations": {
-                    "title": getattr(settings, 'SITE_NAME', 'KYC Verification Fee'),
-                    "description": getattr(settings, 'KYC_APPLICATION_FEE_DESCRIPTION', 'KYC verification payment'),
-                },
-                "public_key": public_key,
+            wallet_address = init_serializer.validated_data['wallet_address']
+            self._sync_user_wallet(user=user, wallet_address=wallet_address)
+            config = self._get_payment_configuration()
+            amount = config['fee_usd']
+            token_price = config['token_price_usd']
+            required_token_amount = (amount / token_price).quantize(Decimal('0.000000000000000001'))
+            tx_ref = f"kyc-onchain-{user.id}-{uuid4().hex[:10]}"
+            init_payload = {
+                'swap_url': config['swap_url'],
+                'network_name': config['network_name'],
             }
-
-            phone_number = getattr(getattr(user, 'profile', None), 'phone_number', None) or getattr(user, 'phone_number', None)
-            if phone_number:
-                payload["customer"]["phone_number"] = phone_number
-
-            base_url = getattr(settings, 'FLUTTERWAVE_BASE_URL', 'https://api.flutterwave.com/v3')
-            try:
-                gateway_response = requests.post(
-                    f"{base_url.rstrip('/')}/payments",
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {secret_key}",
-                        "Content-Type": "application/json",
-                    },
-                    timeout=30,
-                )
-                gateway_response.raise_for_status()
-                response_data = gateway_response.json()
-            except (requests.RequestException, ValueError) as exc:
-                logger.exception("Failed to initialize Flutterwave payment")
-                return Response(
-                    {'detail': 'Unable to initialize payment at the moment.'},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
-
-            payment_data = response_data.get('data') if isinstance(response_data, dict) else {}
-            payment_link = payment_data.get('link')
-            flw_ref = payment_data.get('flw_ref') or payment_data.get('id')
-
-            if not payment_link:
-                logger.error("Flutterwave response missing payment link: %s", response_data)
-                return Response(
-                    {'detail': 'Payment link not returned by gateway.'},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
 
             if existing_payment:
                 existing_payment.tx_ref = tx_ref
-                existing_payment.flw_ref = flw_ref
                 existing_payment.amount = amount
-                existing_payment.currency = currency
+                existing_payment.currency = 'USD'
+                existing_payment.payer_wallet_address = wallet_address
+                existing_payment.collection_wallet_address = config['collection_wallet_address']
+                existing_payment.required_token_amount = required_token_amount
+                existing_payment.token_price_usd = token_price
+                existing_payment.token_symbol = config['token_symbol']
+                existing_payment.token_address = config['token_address']
+                existing_payment.token_decimals = config['token_decimals']
+                existing_payment.chain_id = config['chain_id']
                 existing_payment.status = KYCPayment.Status.PENDING
-                existing_payment.payment_link = payment_link
-                existing_payment.init_payload = {"request": payload, "response": response_data}
+                existing_payment.payment_link = None
+                existing_payment.flw_ref = None
+                existing_payment.init_payload = init_payload
+                existing_payment.last_webhook_payload = {}
+                existing_payment.payment_confirmed = False
+                existing_payment.payment_rejection_reason = None
+                existing_payment.payment_tx_hash = None
+                existing_payment.verification_details = {}
+                existing_payment.paid_at = None
+                existing_payment.verified_at = None
                 existing_payment.save()
                 payment = existing_payment
             else:
                 payment = KYCPayment.objects.create(
                     user=user,
                     tx_ref=tx_ref,
-                    flw_ref=flw_ref,
                     amount=amount,
-                    currency=currency,
+                    currency='USD',
+                    payer_wallet_address=wallet_address,
+                    collection_wallet_address=config['collection_wallet_address'],
+                    required_token_amount=required_token_amount,
+                    token_price_usd=token_price,
+                    token_symbol=config['token_symbol'],
+                    token_address=config['token_address'],
+                    token_decimals=config['token_decimals'],
+                    chain_id=config['chain_id'],
                     status=KYCPayment.Status.PENDING,
-                    payment_link=payment_link,
-                    init_payload={"request": payload, "response": response_data},
+                    init_payload=init_payload,
                 )
 
             return Response(
                 {
-                    'message': 'KYC payment initialized successfully.',
+                    'message': 'KYC payment requirement prepared successfully.',
                     'payment': self.get_serializer(payment).data,
-                    'flutterwave_payload': payload,
                 },
                 status=status.HTTP_201_CREATED
             )
         except ValidationError as exc:
             logger.error("KYC payment validation error: %s", exc, exc_info=True)
-            print(f"[KYCPaymentViewSet.create] Validation error: {exc}")
             return Response(
                 {'detail': exc.detail if hasattr(exc, 'detail') else str(exc)},
                 status=status.HTTP_400_BAD_REQUEST
             )
         except Exception as exc:
-            logger.exception("Unexpected error initializing KYC payment")
-            print(f"[KYCPaymentViewSet.create] Unexpected error: {exc}")
+            logger.exception("Unexpected error initializing on-chain KYC payment")
             return Response(
-                {'detail': 'Unable to initialize payment at the moment.'},
+                {'detail': 'Unable to prepare the KYC payment right now.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
@@ -757,119 +724,211 @@ class KYCPaymentViewSet(
             )
         return Response(self.get_serializer(payment).data)
 
-    def _determine_charge_amount(self, requested_currency: str):
-        """Return tuple of (amount_decimal, currency_code)."""
-        base_currency = (getattr(settings, 'KYC_APPLICATION_FEE_CURRENCY', 'USD') or 'USD').upper()
-        base_amount = getattr(settings, 'KYC_APPLICATION_FEE_AMOUNT', Decimal('0'))
-        try:
-            base_amount = Decimal(str(base_amount))
-        except Exception:
-            base_amount = Decimal('0')
+    @action(detail=False, methods=['post'], url_path='verify-transfer')
+    def verify_transfer(self, request):
+        serializer = KYCPaymentVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        target_currency = (requested_currency or base_currency).upper()
+        payment = self.get_queryset().first()
+        if not payment:
+            return Response(
+                {'detail': 'No KYC payment session found for this user.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        if target_currency == base_currency:
-            return base_amount, base_currency
+        tx_hash = serializer.validated_data['tx_hash']
+        if payment.status == KYCPayment.Status.SUCCESSFUL and payment.payment_tx_hash == tx_hash:
+            return Response(
+                {
+                    'message': 'KYC payment already verified.',
+                    'payment': self.get_serializer(payment).data,
+                },
+                status=status.HTTP_200_OK,
+            )
 
-        converted_amount = self._convert_currency(
-            amount=base_amount,
-            from_currency=base_currency,
-            to_currency=target_currency
+        if KYCPayment.objects.filter(payment_tx_hash__iexact=tx_hash).exclude(pk=payment.pk).exists():
+            raise ValidationError({'detail': 'This transaction hash has already been used for another payment.'})
+
+        receipt, tx = self._load_transaction(tx_hash)
+        self._validate_transfer_against_payment(payment=payment, tx=tx, receipt=receipt)
+
+        payment.status = KYCPayment.Status.SUCCESSFUL
+        payment.payment_confirmed = True
+        payment.payment_rejection_reason = None
+        payment.payment_tx_hash = tx_hash
+        payment.paid_at = timezone.now()
+        payment.verified_at = timezone.now()
+        payment.verification_details = {
+            'block_number': receipt['blockNumber'],
+            'transaction_from': tx['from'],
+            'transaction_to': tx.get('to'),
+            'transaction_index': receipt.get('transactionIndex'),
+        }
+        payment.save(
+            update_fields=[
+                'status',
+                'payment_confirmed',
+                'payment_rejection_reason',
+                'payment_tx_hash',
+                'paid_at',
+                'verified_at',
+                'verification_details',
+                'updated_at',
+            ]
         )
-        return converted_amount, target_currency
 
-    def _convert_currency(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        """Convert amount using external FX providers (not Flutterwave)."""
-        try:
-            return self._convert_currency_with_freecurrencyapi(amount, from_currency, to_currency)
-        except ValidationError:
-            pass
-        return self._convert_currency_with_fixer(amount, from_currency, to_currency)
+        return Response(
+            {
+                'message': 'KYC payment verified successfully.',
+                'payment': self.get_serializer(payment).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
-    def _convert_currency_with_freecurrencyapi(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        api_key = getattr(settings, "EXCHANGERATE_API_KEY", None)
-        if not api_key:
-            raise ValidationError("Freecurrencyapi API key is not configured.")
+    def _get_payment_configuration(self):
+        fee_usd = Decimal(str(getattr(settings, 'KYC_APPLICATION_FEE_AMOUNT', '0')))
+        if fee_usd <= 0:
+            raise ValidationError('KYC fee amount is not configured.')
 
-        from_currency = (from_currency or "").upper()
-        to_currency = (to_currency or "").upper()
-        if not from_currency or not to_currency:
-            raise ValidationError("Both source and destination currencies are required.")
+        purchase_settings = TokenPurchaseSettings.objects.first()
+        token_price_usd = None
+        if purchase_settings and purchase_settings.token_price_usd:
+            token_price_usd = Decimal(str(purchase_settings.token_price_usd))
+        if not token_price_usd:
+            token_price_usd = Decimal(str(getattr(settings, 'KYC_PAYMENT_TOKEN_PRICE_USD', '0')))
+        if token_price_usd <= 0:
+            raise ValidationError('Token price in USD must be configured before accepting KYC payments.')
 
-        try:
-            response = requests.get(
-                "https://api.freecurrencyapi.com/v1/latest",
-                params={
-                    "apikey": api_key,
-                    "base_currency": from_currency,
-                    "currencies": to_currency,
-                },
-                timeout=20,
-            )
-            data = response.json()
-        except requests.RequestException as exc:
-            logger.error("Error calling freecurrencyapi: %s", exc, exc_info=True)
-            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
-        except ValueError as exc:
-            raise ValidationError("Received invalid response from freecurrencyapi.") from exc
+        collection_wallet_address = getattr(settings, 'KYC_PAYMENT_COLLECTION_WALLET', None)
+        if not collection_wallet_address or not Web3.is_address(collection_wallet_address):
+            raise ValidationError('KYC collection wallet is not configured correctly.')
 
-        rate = (data.get("data") or {}).get(to_currency)
-        if rate is None:
-            raise ValidationError(f"Exchange rate not found for {to_currency}.")
+        chain_id = int(getattr(settings, 'KYC_PAYMENT_CHAIN_ID', '137'))
+        configured_token_address = getattr(settings, 'KYC_PAYMENT_TOKEN_ADDRESS', None)
+        token_address = configured_token_address
 
         try:
-            amount_decimal = Decimal(str(amount))
-            converted_amount = (amount_decimal * Decimal(str(rate))).quantize(Decimal("0.01"))
+            reward_chain_id = int(getattr(settings, 'KYC_REWARD_CHAIN_ID', '0'))
+        except (TypeError, ValueError):
+            reward_chain_id = 0
+
+        # Only fall back to the legacy token address when the KYC payment flow is on the
+        # same chain as the existing reward/token configuration. This avoids pointing a
+        # Polygon mainnet fee flow at an Amoy deployment by mistake.
+        if not token_address and chain_id == reward_chain_id:
+            token_address = getattr(settings, 'TOKEN_CONTRACT_ADDRESS', None)
+
+        if not token_address or not Web3.is_address(token_address):
+            raise ValidationError('KYC payment token address is not configured correctly.')
+
+        return {
+            'fee_usd': fee_usd.quantize(Decimal('0.01')),
+            'token_price_usd': token_price_usd,
+            'collection_wallet_address': Web3.to_checksum_address(collection_wallet_address),
+            'token_address': Web3.to_checksum_address(token_address),
+            'token_symbol': getattr(settings, 'KYC_PAYMENT_TOKEN_SYMBOL', 'GZC'),
+            'token_decimals': int(getattr(settings, 'KYC_PAYMENT_TOKEN_DECIMALS', '18')),
+            'chain_id': chain_id,
+            'swap_url': self._build_swap_url(token_address),
+            'network_name': getattr(settings, 'KYC_PAYMENT_NETWORK_NAME', 'Polygon'),
+        }
+
+    def _build_swap_url(self, token_address: str):
+        configured_url = getattr(settings, 'KYC_PAYMENT_SWAP_URL', None)
+        if configured_url:
+            return configured_url.replace('{token_address}', token_address)
+        if int(getattr(settings, 'KYC_PAYMENT_CHAIN_ID', '137')) == 137:
+            return f"https://app.uniswap.org/swap?chain=polygon&outputCurrency={token_address}"
+        return None
+
+    def _sync_user_wallet(self, user, wallet_address: str):
+        wallet_address = Web3.to_checksum_address(wallet_address)
+        existing_user = (
+            get_user_model()
+            .objects
+            .filter(wallet_address__iexact=wallet_address)
+            .exclude(pk=user.pk)
+            .exists()
+        )
+        if existing_user:
+            raise ValidationError('Wallet address is already connected to another account.')
+
+        if user.wallet_address != wallet_address:
+            user.wallet_address = wallet_address
+            user.save(update_fields=['wallet_address'])
+
+    def _get_web3(self):
+        rpc_url = getattr(settings, 'KYC_PAYMENT_RPC_URL', None) or getattr(settings, 'ETHEREUM_RPC_URL', None)
+        if not rpc_url:
+            raise ValidationError('Polygon RPC URL is not configured.')
+        provider = Web3.HTTPProvider(rpc_url)
+        web3 = Web3(provider)
+        if not web3.is_connected():
+            raise ValidationError('Unable to connect to the configured blockchain RPC endpoint.')
+        return web3
+
+    def _load_transaction(self, tx_hash: str):
+        web3 = self._get_web3()
+        try:
+            receipt = web3.eth.get_transaction_receipt(tx_hash)
         except Exception as exc:  # noqa: BLE001
-            logger.error("Invalid conversion calculation from freecurrencyapi: %s", exc, exc_info=True)
-            raise ValidationError("Invalid exchange rate received from freecurrencyapi.") from exc
-
-        return converted_amount
-
-    def _convert_currency_with_fixer(self, amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        api_key = getattr(settings, "FIXER_API_KEY", None)
-        if not api_key:
-            raise ValidationError("Fixer API key is not configured on the server.")
-
-        from_currency = (from_currency or "").upper()
-        to_currency = (to_currency or "").upper()
-        if not from_currency or not to_currency:
-            raise ValidationError("Both source and destination currencies are required.")
+            raise ValidationError({'detail': 'Transaction receipt is not available yet. Wait for confirmation and try again.'}) from exc
+        if not receipt or receipt.get('status') != 1:
+            raise ValidationError({'detail': 'The transaction was not successful on-chain.'})
 
         try:
-            response = requests.get(
-                "https://data.fixer.io/api/latest",
-                params={
-                    "access_key": api_key,
-                    "symbols": f"{from_currency},{to_currency}",
-                },
-                timeout=20,
-            )
-            data = response.json()
-        except requests.RequestException as exc:
-            logger.error("Error calling Fixer API: %s", exc, exc_info=True)
-            raise ValidationError(f"Error getting exchange rate: {exc}") from exc
-        except ValueError as exc:
-            raise ValidationError("Received invalid response from Fixer API.") from exc
-
-        if not data.get("success", True):
-            error_info = data.get("error", {}).get("info") or "Fixer API error."
-            raise ValidationError(error_info)
-
-        rates = data.get("rates") or {}
-        from_rate = rates.get(from_currency)
-        to_rate = rates.get(to_currency)
-        if from_rate is None or to_rate is None:
-            raise ValidationError(f"Exchange rate not found for {to_currency}.")
-
-        try:
-            amount_decimal = Decimal(str(amount))
-            converted_amount = (amount_decimal * (Decimal(str(to_rate)) / Decimal(str(from_rate)))).quantize(Decimal("0.01"))
+            tx = web3.eth.get_transaction(tx_hash)
         except Exception as exc:  # noqa: BLE001
-            logger.error("Invalid conversion calculation from Fixer API: %s", exc, exc_info=True)
-            raise ValidationError("Invalid exchange rate received from Fixer API.") from exc
+            raise ValidationError({'detail': 'Unable to load the transaction from the blockchain.'}) from exc
 
-        return converted_amount
+        return receipt, tx
+
+    def _validate_transfer_against_payment(self, payment, tx, receipt):
+        expected_sender = (payment.payer_wallet_address or '').lower()
+        tx_sender = (tx.get('from') or '').lower()
+        if expected_sender != tx_sender:
+            payment.status = KYCPayment.Status.FAILED
+            payment.payment_rejection_reason = 'Transaction sender does not match the wallet used for KYC payment.'
+            payment.save(update_fields=['status', 'payment_rejection_reason', 'updated_at'])
+            raise ValidationError({'detail': payment.payment_rejection_reason})
+
+        transfer_topic = Web3.keccak(text='Transfer(address,address,uint256)').hex().lower()
+        expected_token = (payment.token_address or '').lower()
+        expected_receiver = (payment.collection_wallet_address or '').lower()
+        required_amount_wei = int(
+            Decimal(str(payment.required_token_amount)) * (Decimal(10) ** int(payment.token_decimals))
+        )
+
+        matched_amount = 0
+        for log in receipt['logs']:
+            log_address = getattr(log, 'address', None) or log.get('address')
+            if not log_address or log_address.lower() != expected_token:
+                continue
+
+            topics = getattr(log, 'topics', None) or log.get('topics') or []
+            if len(topics) < 3:
+                continue
+            topic0 = topics[0].hex().lower() if hasattr(topics[0], 'hex') else str(topics[0]).lower()
+            if topic0 != transfer_topic:
+                continue
+
+            from_address = f"0x{(topics[1].hex() if hasattr(topics[1], 'hex') else str(topics[1]))[-40:]}".lower()
+            to_address = f"0x{(topics[2].hex() if hasattr(topics[2], 'hex') else str(topics[2]))[-40:]}".lower()
+            if from_address != expected_sender or to_address != expected_receiver:
+                continue
+
+            raw_data = getattr(log, 'data', None) or log.get('data')
+            if isinstance(raw_data, bytes):
+                value = int.from_bytes(raw_data, byteorder='big')
+            else:
+                value = int(str(raw_data), 16)
+            matched_amount += value
+
+        if matched_amount < required_amount_wei:
+            payment.status = KYCPayment.Status.FAILED
+            payment.payment_rejection_reason = 'The transaction did not transfer enough GZC to the KYC collection wallet.'
+            payment.save(update_fields=['status', 'payment_rejection_reason', 'updated_at'])
+            raise ValidationError({'detail': payment.payment_rejection_reason})
 
 
 

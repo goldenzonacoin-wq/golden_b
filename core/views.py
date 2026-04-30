@@ -2,7 +2,6 @@ import logging
 from uuid import uuid4
 
 import requests
-from mainapps.kyc.models import KYCPayment
 from mainapps.blockchain.models import TokenPurchase
 from django.core.management import call_command
 from rest_framework import status, permissions
@@ -36,46 +35,13 @@ class FlutterwaveWebhookView(APIView):
         if not tx_ref:
             return Response({'detail': 'Missing transaction reference.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        payment = None
-        payment_type = None
-
         try:
-            payment = KYCPayment.objects.get(tx_ref=tx_ref)
-            payment_type = 'kyc'
-        except KYCPayment.DoesNotExist:
-            try:
-                payment = TokenPurchase.objects.get(tx_ref=tx_ref)
-                payment_type = 'token_purchase'
-            except TokenPurchase.DoesNotExist:
-                return Response({'detail': 'Payment not found, ignoring event.'}, status=status.HTTP_200_OK)
+            payment = TokenPurchase.objects.get(tx_ref=tx_ref)
+        except TokenPurchase.DoesNotExist:
+            return Response({'detail': 'Payment not found, ignoring event.'}, status=status.HTTP_200_OK)
 
         payment.last_webhook_payload = payload
         event_status = event_data.get('status')
-
-        if payment_type == 'kyc':
-            if event_status == 'successful':
-                charged_amount = event_data.get('charged_amount') or event_data.get('amount') or payment.amount
-                try:
-                    charged_amount = Decimal(str(charged_amount))
-                except Exception:
-                    charged_amount = Decimal('0')
-
-                currency = event_data.get('currency')
-                if charged_amount >= payment.amount and currency == payment.currency:
-                    payment.status = KYCPayment.Status.SUCCESSFUL
-                    payment.paid_at = timezone.now()
-                else:
-                    payment.status = KYCPayment.Status.FAILED
-                payment.flw_ref = event_data.get('flw_ref') or event_data.get('id')
-            elif event_status == 'failed':
-                payment.status = KYCPayment.Status.FAILED
-            elif event_status == 'cancelled':
-                payment.status = KYCPayment.Status.CANCELLED
-            else:
-                payment.status = KYCPayment.Status.PENDING
-
-            payment.save()
-            return Response({'status': 'received'})
 
         if event_status == 'successful':
             charged_amount = event_data.get('charged_amount') or event_data.get('amount') or payment.charge_amount
