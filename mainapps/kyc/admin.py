@@ -448,6 +448,7 @@ class ComplianceCheckAdmin(admin.ModelAdmin):
         )
     result_badge.short_description = 'Result'
 
+@admin.register(KYCPayment)
 class KYCPaymentAdmin(admin.ModelAdmin):
     list_display = ['kyc_application', 'amount', 'currency', 'status_badge', 'created_at']
     list_filter = ['status', 'created_at']
