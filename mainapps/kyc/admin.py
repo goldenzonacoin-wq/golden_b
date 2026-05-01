@@ -12,7 +12,8 @@ from .models import (
     KYCDocument, 
     KYCReviewNote, 
     KYCSettings, 
-    ComplianceCheck
+    ComplianceCheck,
+    KYCPayment
 )
 
 
@@ -447,8 +448,28 @@ class ComplianceCheckAdmin(admin.ModelAdmin):
         )
     result_badge.short_description = 'Result'
 
+class KYCPaymentAdmin(admin.ModelAdmin):
+    list_display = ['kyc_application', 'amount', 'currency', 'status_badge', 'created_at']
+    list_filter = ['status', 'created_at']
+    search_fields = ['kyc_application__application_id']
+    readonly_fields = ['created_at']
+    
+    def status_badge(self, obj):
+        colors = {
+            'pending': '#ffc107',
+            'completed': '#28a745',
+            'failed': '#dc3545'
+        }
+        color = colors.get(obj.status, '#6c757d')
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 8px; '
+            'border-radius: 3px; font-size: 11px;">{}</span>',
+            color, obj.get_status_display()
+        )
+    status_badge.short_description = 'Payment Status'
 
 # Customize admin site header
-admin.site.site_header = 'ATC Platform KYC Administration'
+admin.site.site_header = 'GZC Platform KYC Administration'
 admin.site.site_title = 'KYC Admin'
 admin.site.index_title = 'KYC Management Dashboard'
+
