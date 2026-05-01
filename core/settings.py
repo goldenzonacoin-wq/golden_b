@@ -280,15 +280,18 @@ SIMPLE_JWT = {
 
 
 AUTH_COOKIE='access'
+AUTH_REFRESH_COOKIE='refresh'
 AUTH_COOKIE_ACCESS_MAX_AGE=60*10
 AUTH_COOKIE_REFRESH_MAX_AGE=60*60*24
 AUTH_COOKIE_SECURE=False 
 AUTH_COOKIE_HTTP_ONLY=True
 AUTH_COOKIE_PATH='/'
 AUTH_COOKIE_SAMESITE='None'
+MFA_REQUIRED_FOR_ALL_USERS = os.getenv("MFA_REQUIRED_FOR_ALL_USERS", "true").lower() == "true"
+MFA_ISSUER = os.getenv("MFA_ISSUER", "GoldenZona")
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'mainapps.accounts.authentication.AccountJWTAuthentication',
     )
 }
 

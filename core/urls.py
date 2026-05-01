@@ -6,10 +6,6 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-)
 from schema_graph.views import Schema
 
 schema_view = get_schema_view(
@@ -29,7 +25,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     # djoser urls
     path('auth-api/', include('djoser.urls')),
-    path('', include('djoser.urls.jwt')),
+    path('auth/', include('mainapps.accounts.jwt_urls')),
 
     #  api endpoints docs
     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),

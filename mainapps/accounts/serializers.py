@@ -1,9 +1,10 @@
 from rest_framework import serializers
-from django.contrib.auth import authenticate
-from django.contrib.auth.password_validation import validate_password
+from rest_framework.exceptions import AuthenticationFailed
 from django.core.exceptions import ValidationError
 from .models import Organisation, User, UserProfile, VerificationCode, UserActivity
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer as BaseTokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.utils import timezone
 from djoser.serializers import UserCreateSerializer as BaseUserCreateSerializer
 from cities_light.models import Country, Region, SubRegion,City
@@ -57,49 +58,10 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         return user_perms
 
     @classmethod
-    def get_token(cls, user):
-        """Generate token with blockchain-specific claims"""
-        token = super().get_token(user)
-        # Get user permissions
-        perms = cls.get_all_permissions(user)
-        token['permissions'] = list(perms)
-        # Basic user info
-        token['email'] = user.email
-        token['user_id'] = user.id
-        token['role'] = user.role
-        token['membership_tier'] = user.membership_tier
-        # Profile information
+    def _build_user_payload(cls, user):
         profile = getattr(user, 'profile', None)
-        token['profile_id'] = profile.id if profile else None
-        token['reputation_score'] = profile.reputation_score if profile else 0
-        token['contribution_points'] = profile.contribution_points if profile else 0
-        
-        # Blockchain-specific data
-        token['wallet_address'] = user.wallet_address
-        token['is_whale'] = user.is_whale
-        token['is_verified'] = user.is_verified
-        token['is_kyc_verified'] = user.is_kyc_verified
-        token['has_been_kyc_rewarded'] = user.has_been_kyc_rewarded
-        
-        # KYC status
-        try:
-            from mainapps.kyc.models import KYCApplication
-            kyc_app = KYCApplication.objects.filter(user=user).first()
-            token['kyc_status'] = kyc_app.status if kyc_app else 'NOT_SUBMITTED'
-            token['kyc_level'] = kyc_app.verification_level if kyc_app else 'NONE'
-        except Exception:
-            token['kyc_status'] = 'NOT_SUBMITTED'
-            token['kyc_level'] = 'NONE'
-        return token
 
-    def validate(self, attrs):
-        """Validate and return enhanced user data"""
-        data = super().validate(attrs)
-        user = self.user
-        profile = getattr(user, 'profile', None)
-        
-        # Enhanced user data for frontend
-        data.update({
+        data = {
             'id': user.id,
             'email': user.email,
             'first_name': user.first_name,
@@ -117,22 +79,140 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             'reputation_score': profile.reputation_score if profile else 0,
             'contribution_points': profile.contribution_points if profile else 0,
             'referral_code': profile.referral_code if profile else None,
-        })
-        # Add KYC status information
+            'mfa_enabled': bool(user.mfa_enabled),
+            'has_setup_mfa': bool(user.has_setup_mfa),
+        }
+
         try:
             from mainapps.kyc.models import KYCApplication
             kyc_app = KYCApplication.objects.filter(user=user).first()
-            data.update({
+            data.update(
+                {
                 'kyc_status': kyc_app.status if kyc_app else 'NOT_SUBMITTED',
                 'kyc_level': kyc_app.verification_level if kyc_app else 'NONE',
                 'kyc_submitted_at': kyc_app.submitted_at if kyc_app else None,
-            })
+                }
+            )
         except Exception:
-            data.update({
+            data.update(
+                {
                 'kyc_status': 'NOT_SUBMITTED',
                 'kyc_level': 'NONE',
                 'kyc_submitted_at': None,
-            })
+                }
+            )
+        return data
+
+    @classmethod
+    def _session_mfa_verified(cls, user, mfa_verified=None):
+        if mfa_verified is not None:
+            return bool(mfa_verified)
+        return not user.requires_mfa
+
+    @classmethod
+    def _apply_claims(cls, token, user):
+        payload = cls._build_user_payload(user)
+        token['permissions'] = list(cls.get_all_permissions(user))
+        token['email'] = user.email
+        token['user_id'] = user.id
+        token['role'] = user.role
+        token['membership_tier'] = user.membership_tier
+        token['first_name'] = user.first_name or ''
+        token['last_name'] = user.last_name or ''
+        token['wallet_address'] = user.wallet_address
+        token['is_verified'] = user.is_verified
+        token['is_kyc_verified'] = user.is_kyc_verified
+        token['has_been_kyc_rewarded'] = user.has_been_kyc_rewarded
+        token['profile_id'] = payload['profile_id']
+        token['reputation_score'] = payload['reputation_score']
+        token['contribution_points'] = payload['contribution_points']
+        token['mfa_enabled'] = bool(user.mfa_enabled)
+        token['has_setup_mfa'] = bool(user.has_setup_mfa)
+        token['mfa_verified'] = bool(getattr(user, '_jwt_mfa_verified', False))
+        token['kyc_status'] = payload['kyc_status']
+        token['kyc_level'] = payload['kyc_level']
+
+    @classmethod
+    def issue_tokens_for_user(cls, user, mfa_verified=None):
+        setattr(user, '_jwt_mfa_verified', cls._session_mfa_verified(user, mfa_verified))
+        try:
+            refresh = cls.get_token(user)
+            access = refresh.access_token
+            return refresh, access
+        finally:
+            if hasattr(user, '_jwt_mfa_verified'):
+                delattr(user, '_jwt_mfa_verified')
+
+    @classmethod
+    def get_token(cls, user):
+        """Generate token with blockchain-specific claims"""
+        token = super().get_token(user)
+        cls._apply_claims(token, user)
+        return token
+
+    def validate(self, attrs):
+        """Validate and return enhanced user data"""
+        email = attrs.get(self.username_field) or attrs.get("email")
+        password = attrs.get("password")
+
+        user = None
+        if email:
+            user = User.objects.filter(email__iexact=email).first()
+
+        if not user:
+            raise AuthenticationFailed("No account found with this email.", code="email_not_found")
+        if not user.is_active:
+            raise AuthenticationFailed("This account is inactive.", code="account_disabled")
+        if password and not user.check_password(password):
+            raise AuthenticationFailed("Incorrect password.", code="password_mismatch")
+
+        data = super().validate(attrs)
+        refresh, access = self.issue_tokens_for_user(self.user)
+        data['refresh'] = str(refresh)
+        data['access'] = str(access)
+        data['mfa_verified'] = self._session_mfa_verified(self.user)
+        data.update(self._build_user_payload(self.user))
+        return data
+
+
+class TokenRefreshSerializer(BaseTokenRefreshSerializer):
+    """Attach custom claims to refreshed access tokens."""
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        raw_refresh = data.get("refresh") or attrs.get("refresh")
+
+        if (not user or not user.is_authenticated) and raw_refresh:
+            try:
+                refresh_token = RefreshToken(raw_refresh)
+                user_id = refresh_token.get("user_id")
+                if user_id:
+                    user = User.objects.filter(id=user_id).first()
+            except Exception:
+                user = None
+
+        if not user or not user.is_authenticated:
+            return data
+
+        mfa_verified = None
+        if raw_refresh:
+            try:
+                refresh_payload = RefreshToken(raw_refresh)
+                mfa_verified = bool(refresh_payload.get("mfa_verified"))
+            except Exception:
+                mfa_verified = None
+
+        custom_refresh, custom_access = MyTokenObtainPairSerializer.issue_tokens_for_user(
+            user,
+            mfa_verified=MyTokenObtainPairSerializer._session_mfa_verified(user, mfa_verified),
+        )
+        data["access"] = str(custom_access)
+        if "refresh" in data:
+            data["refresh"] = str(custom_refresh)
+        data["mfa_verified"] = MyTokenObtainPairSerializer._session_mfa_verified(user, mfa_verified)
+        data.update(MyTokenObtainPairSerializer._build_user_payload(user))
         return data
 
 
@@ -194,11 +274,13 @@ class MyUserSerializer(serializers.ModelSerializer):
             'id', 'email', 'first_name', 'last_name', 'get_full_name',
             'role', 'membership_tier', 'wallet_address', 'wallet_address_short',
              'is_whale', 'is_verified', 'is_kyc_verified',
-            'has_been_kyc_rewarded', 'phone_number', 'date_of_birth', 'created_at', 'profile'
+            'has_been_kyc_rewarded', 'phone_number', 'date_of_birth',
+            'mfa_enabled', 'has_setup_mfa', 'created_at', 'profile'
         )
         read_only_fields = (
             'id', 'get_full_name', 'is_whale', 
-            'is_verified', 'is_kyc_verified', 'has_been_kyc_rewarded', 'created_at'
+            'is_verified', 'is_kyc_verified', 'has_been_kyc_rewarded',
+            'mfa_enabled', 'has_setup_mfa', 'created_at'
         )
     
     def get_wallet_address_short(self, obj):

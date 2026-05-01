@@ -1,3 +1,8 @@
+import base64
+from io import BytesIO
+
+import pyotp
+import qrcode
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -5,12 +10,14 @@ from rest_framework.authtoken.models import Token
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import login, logout
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 import logging
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView, TokenVerifyView
 from subapps.emails.send_email import send_html_email
 from django.conf import settings
 from .models import User, UserProfile, VerificationCode, UserActivity, Organisation
@@ -24,6 +31,7 @@ from .serializers import (
     UserProfileSerializer, UserUpdateSerializer, 
      UserActivitySerializer,
     WalletConnectionSerializer, ReferralSerializer, OrganisationSerializer,
+    MyTokenObtainPairSerializer, TokenRefreshSerializer,
     KYCRewardRequestSerializer
 )
 from cities_light.models import Country, Region, SubRegion,City
@@ -38,6 +46,237 @@ class StandardResultsSetPagination(PageNumberPagination):
     max_page_size = 100
 
 logger = logging.getLogger(__name__)
+
+
+def _set_session_cookies(response, access_token=None, refresh_token=None):
+    if access_token:
+        response.set_cookie(
+            settings.AUTH_COOKIE,
+            access_token,
+            max_age=settings.AUTH_COOKIE_ACCESS_MAX_AGE,
+            path=settings.AUTH_COOKIE_PATH,
+            secure=settings.AUTH_COOKIE_SECURE,
+            httponly=settings.AUTH_COOKIE_HTTP_ONLY,
+            samesite=settings.AUTH_COOKIE_SAMESITE,
+        )
+    if refresh_token:
+        response.set_cookie(
+            settings.AUTH_REFRESH_COOKIE,
+            refresh_token,
+            max_age=settings.AUTH_COOKIE_REFRESH_MAX_AGE,
+            path=settings.AUTH_COOKIE_PATH,
+            secure=settings.AUTH_COOKIE_SECURE,
+            httponly=settings.AUTH_COOKIE_HTTP_ONLY,
+            samesite=settings.AUTH_COOKIE_SAMESITE,
+        )
+
+
+def _clear_session_cookies(response):
+    response.delete_cookie(settings.AUTH_COOKIE, path=settings.AUTH_COOKIE_PATH)
+    response.delete_cookie(settings.AUTH_REFRESH_COOKIE, path=settings.AUTH_COOKIE_PATH)
+
+
+def _build_auth_payload(user, refresh, access):
+    payload = MyTokenObtainPairSerializer._build_user_payload(user)
+    payload.update(
+        {
+            "refresh": str(refresh),
+            "access": str(access),
+            "mfa_verified": True,
+        }
+    )
+    return payload
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+
+        if response.status_code == 200:
+            access_token = response.data.get("access")
+            refresh_token = response.data.get("refresh")
+            _set_session_cookies(response, access_token=access_token, refresh_token=refresh_token)
+
+        return response
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    serializer_class = TokenRefreshSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        refresh_token = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE)
+        if refresh_token and not request.data.get("refresh"):
+            request._full_data = {**request.data, "refresh": refresh_token}
+
+        response = super().post(request, *args, **kwargs)
+
+        if response.status_code == 200:
+            access_token = response.data.get("access")
+            maybe_refresh_token = response.data.get("refresh")
+            _set_session_cookies(
+                response,
+                access_token=access_token,
+                refresh_token=maybe_refresh_token if maybe_refresh_token else None,
+            )
+
+        return response
+
+
+class CustomTokenVerifyView(TokenVerifyView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        access_token = request.COOKIES.get(settings.AUTH_COOKIE)
+        if access_token and not request.data.get("token"):
+            request._full_data = {**request.data, "token": access_token}
+        return super().post(request, *args, **kwargs)
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        _clear_session_cookies(response)
+        return response
+
+
+class MfaSetupView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = get_user_model().objects.get(id=request.user.id)
+        force = str(request.data.get("force", "")).strip().lower() in {"1", "true", "yes"}
+
+        if user.mfa_enabled and not force and user.has_setup_mfa:
+            return Response(
+                {"detail": "MFA is already enabled for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if force or not user.mfa_secret:
+            user.mfa_secret = pyotp.random_base32()
+            user.mfa_enabled = False
+            user.save(update_fields=["mfa_secret", "mfa_enabled"])
+
+        issuer = getattr(settings, "MFA_ISSUER", "GoldenZona")
+        totp = pyotp.TOTP(user.mfa_secret)
+        otpauth_url = totp.provisioning_uri(name=user.email, issuer_name=issuer)
+
+        qr_image = qrcode.make(otpauth_url)
+        buffer = BytesIO()
+        qr_image.save(buffer, format="PNG")
+        qr_data = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        return Response(
+            {
+                "mfa_secret": user.mfa_secret,
+                "otpauth_url": otpauth_url,
+                "qr_code": f"data:image/png;base64,{qr_data}",
+                "mfa_enabled": user.mfa_enabled,
+                "has_setup_mfa": user.has_setup_mfa,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MfaVerifyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = get_user_model().objects.get(id=request.user.id)
+        code = (request.data.get("code") or "").strip()
+
+        if not code:
+            return Response({"detail": "Verification code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.mfa_secret:
+            return Response(
+                {"detail": "MFA has not been set up for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        totp = pyotp.TOTP(user.mfa_secret)
+        if not totp.verify(code, valid_window=1):
+            return Response({"detail": "Invalid verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.mfa_enabled or not user.has_setup_mfa:
+            user.mfa_enabled = True
+            user.has_setup_mfa = True
+            user.save(update_fields=["mfa_enabled", "has_setup_mfa"])
+
+        refresh, access = MyTokenObtainPairSerializer.issue_tokens_for_user(user, mfa_verified=True)
+        payload = _build_auth_payload(user, refresh, access)
+        payload.update(
+            {
+                "detail": "MFA verified successfully.",
+                "mfa_enabled": True,
+                "has_setup_mfa": user.has_setup_mfa,
+                "mfa_verified": True,
+            }
+        )
+        response = Response(payload, status=status.HTTP_200_OK)
+        _set_session_cookies(response, access_token=str(access), refresh_token=str(refresh))
+        return response
+
+
+class MfaToggleView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = get_user_model().objects.get(id=request.user.id)
+        desired = request.data.get("enabled", None)
+
+        if desired is None:
+            desired = not user.mfa_enabled
+        else:
+            desired = str(desired).strip().lower() in {"1", "true", "yes"}
+
+        if user.requires_mfa and not desired:
+            return Response(
+                {"detail": "MFA is required for this account.", "mfa_enabled": user.mfa_enabled},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if desired and user.mfa_enabled:
+            return Response(
+                {"detail": "MFA is already enabled for this account.", "mfa_enabled": True},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not desired and not user.mfa_enabled:
+            return Response(
+                {"detail": "MFA is already disabled for this account.", "mfa_enabled": False},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not user.mfa_secret:
+            return Response(
+                {"detail": "MFA has not been set up for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        code = (request.data.get("code") or "").strip()
+        if not code:
+            return Response({"detail": "Verification code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        totp = pyotp.TOTP(user.mfa_secret)
+        if not totp.verify(code, valid_window=1):
+            return Response({"detail": "Invalid verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.mfa_enabled = desired
+        if desired:
+            user.has_setup_mfa = True
+        user.save(update_fields=["mfa_enabled", "has_setup_mfa"])
+
+        state = "enabled" if desired else "disabled"
+        return Response(
+            {"detail": f"MFA {state} successfully.", "mfa_enabled": user.mfa_enabled},
+            status=status.HTTP_200_OK,
+        )
 
 
 class UserViewSet(viewsets.ModelViewSet):

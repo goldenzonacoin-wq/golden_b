@@ -20,8 +20,10 @@ jmespath
 oauthlib
 oauth2_provider
 pillow
+pyotp
 psycopg2-binary
 PyJWT
+qrcode
 python-dateutil
 python-dotenv
 pytz

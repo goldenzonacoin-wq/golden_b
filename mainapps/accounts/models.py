@@ -194,6 +194,9 @@ class User(AbstractUser, PermissionsMixin):
     is_verified = models.BooleanField(default=False)
     is_kyc_verified = models.BooleanField(default=False)
     has_been_kyc_rewarded = models.BooleanField(default=False)
+    mfa_secret = models.CharField(max_length=255, blank=True, null=True)
+    mfa_enabled = models.BooleanField(default=False)
+    has_setup_mfa = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     
@@ -253,6 +256,10 @@ class User(AbstractUser, PermissionsMixin):
         """Check if user is a whale (holds >5% of total supply)"""
         # This would be calculated based on actual blockchain data
         return False
+
+    @property
+    def requires_mfa(self):
+        return bool(getattr(settings, "MFA_REQUIRED_FOR_ALL_USERS", True))
     
     def save(self, *args, **kwargs):
         if not self.username:

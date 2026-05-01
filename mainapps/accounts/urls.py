@@ -12,6 +12,9 @@ router.register(r'addresses', views.AddressViewSet,basename='account-address')
 urlpatterns = [
     path('', include(router.urls)),
     path("verify/",views.VerificationAPI.as_view(),name="verify"),
+    path("mfa/setup/", views.MfaSetupView.as_view(), name="mfa-setup"),
+    path("mfa/verify/", views.MfaVerifyView.as_view(), name="mfa-verify"),
+    path("mfa/toggle/", views.MfaToggleView.as_view(), name="mfa-toggle"),
     path('countries/', views.CountryListView.as_view(), name='country-list'),
     path('regions/', views.RegionListView.as_view(), name='region-list'),
     path('subregions/', views.SubRegionListView.as_view(), name='subregion-list'),
