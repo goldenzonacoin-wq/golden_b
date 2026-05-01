@@ -19,6 +19,8 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
     days_until_expiry = serializers.ReadOnlyField()
     is_expired = serializers.ReadOnlyField()
     nationality_name = serializers.ReadOnlyField(source='nationality.name')
+    reviewed_by_email = serializers.EmailField(source='reviewed_by.email', read_only=True)
+    reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True)
     
     class Meta:
         model = KYCApplication
@@ -31,13 +33,15 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
             'occupation', 'employer', 'annual_income_range', 'source_of_funds',
             'intended_use', 'crypto_experience', 'other_wallets','document_type',
             'submitted_at', 'reviewed_at', 'expires_at', 'days_until_expiry',
-            'is_expired', 'created_at', 'updated_at','nationality_name','document_type_display','phone_number'
+            'is_expired', 'created_at', 'updated_at','nationality_name','document_type_display',
+            'phone_number', 'review_notes', 'rejection_reason', 'reviewed_by_email', 'reviewed_by_name'
         )
         read_only_fields = (
             'id', 'application_id', 'user_email', 'status_display',
             'document_type_display', 'submitted_at', 'reviewed_at',
             'expires_at', 'days_until_expiry', 'is_expired',
-            'created_at', 'updated_at','nationality_name'
+            'created_at', 'updated_at','nationality_name', 'review_notes',
+            'rejection_reason', 'reviewed_by_email', 'reviewed_by_name'
         )
     
     def validate(self, attrs):

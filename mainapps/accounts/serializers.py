@@ -72,6 +72,9 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             'wallet_address': user.wallet_address,
             'is_whale': user.is_whale,
             'is_verified': user.is_verified,
+            'is_active': user.is_active,
+            'is_staff': bool(user.is_staff),
+            'is_superuser': bool(getattr(user, 'is_superuser', False)),
             'is_kyc_verified': user.is_kyc_verified,
             'has_been_kyc_rewarded': user.has_been_kyc_rewarded,
             'phone_number': user.phone_number,
@@ -121,6 +124,9 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['last_name'] = user.last_name or ''
         token['wallet_address'] = user.wallet_address
         token['is_verified'] = user.is_verified
+        token['is_active'] = user.is_active
+        token['is_staff'] = bool(user.is_staff)
+        token['is_superuser'] = bool(getattr(user, 'is_superuser', False))
         token['is_kyc_verified'] = user.is_kyc_verified
         token['has_been_kyc_rewarded'] = user.has_been_kyc_rewarded
         token['profile_id'] = payload['profile_id']
@@ -273,13 +279,13 @@ class MyUserSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'email', 'first_name', 'last_name', 'get_full_name',
             'role', 'membership_tier', 'wallet_address', 'wallet_address_short',
-             'is_whale', 'is_verified', 'is_kyc_verified',
+             'is_whale', 'is_verified', 'is_active', 'is_staff', 'is_superuser', 'is_kyc_verified',
             'has_been_kyc_rewarded', 'phone_number', 'date_of_birth',
             'mfa_enabled', 'has_setup_mfa', 'created_at', 'profile'
         )
         read_only_fields = (
             'id', 'get_full_name', 'is_whale', 
-            'is_verified', 'is_kyc_verified', 'has_been_kyc_rewarded',
+            'is_verified', 'is_active', 'is_staff', 'is_superuser', 'is_kyc_verified', 'has_been_kyc_rewarded',
             'mfa_enabled', 'has_setup_mfa', 'created_at'
         )
     
