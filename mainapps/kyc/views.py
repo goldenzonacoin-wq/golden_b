@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import ValidationError
-from mainapps.blockchain.models import TokenPurchaseSettings
+from mainapps.blockchain.uniswap_v4_price import get_live_uniswap_v4_price, UniswapV4PriceError
 from .models import KYCApplication, KYCDocument, KYCPayment, KYCReviewNote, ComplianceCheck, KYCSettings
 from .serializers import (
     KYCApplicationSerializer, KYCApplicationCreateSerializer,
@@ -790,14 +790,13 @@ class KYCPaymentViewSet(
         if fee_usd <= 0:
             raise ValidationError('KYC fee amount is not configured.')
 
-        purchase_settings = TokenPurchaseSettings.objects.first()
-        token_price_usd = None
-        if purchase_settings and purchase_settings.token_price_usd:
-            token_price_usd = Decimal(str(purchase_settings.token_price_usd))
-        if not token_price_usd:
-            token_price_usd = Decimal(str(getattr(settings, 'KYC_PAYMENT_TOKEN_PRICE_USD', '0')))
+        try:
+            live_price = get_live_uniswap_v4_price()
+            token_price_usd = live_price.token_price_usd
+        except UniswapV4PriceError as exc:
+            raise ValidationError(f'Live Uniswap price is unavailable: {exc}') from exc
         if token_price_usd <= 0:
-            raise ValidationError('Token price in USD must be configured before accepting KYC payments.')
+            raise ValidationError('The live Uniswap price is invalid.')
 
         collection_wallet_address = getattr(settings, 'KYC_PAYMENT_COLLECTION_WALLET', None)
         if not collection_wallet_address or not Web3.is_address(collection_wallet_address):

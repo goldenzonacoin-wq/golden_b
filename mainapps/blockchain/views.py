@@ -23,6 +23,7 @@ from .serializers import (
 )
 from rest_framework.views import APIView
 from .kms_signer import KmsTokenTransfer
+from .uniswap_v4_price import get_live_uniswap_v4_price, UniswapV4PriceError
 from django.core.exceptions import ValidationError
 from web3 import Web3
 import logging
@@ -97,8 +98,9 @@ class TokenPurchaseListCreateView(generics.ListCreateAPIView):
             )
 
         try:
-            usd_price = Decimal(str(purchase_settings.token_price_usd))
-        except Exception:
+            usd_price = get_live_uniswap_v4_price().token_price_usd
+        except UniswapV4PriceError as exc:
+            logger.warning("Unable to fetch live Uniswap v4 price for token purchase: %s", exc)
             usd_price = Decimal('0')
 
         if usd_price <= 0:
@@ -348,10 +350,25 @@ class TokenPurchaseSettingsView(APIView):
 
     def get(self, request):
         settings_obj, _ = TokenPurchaseSettings.objects.get_or_create()
+        token_address = getattr(settings, 'TOKEN_CONTRACT_ADDRESS', None)
+        swap_url = getattr(settings, 'TOKEN_PURCHASE_SWAP_URL', None) or getattr(settings, 'KYC_PAYMENT_SWAP_URL', None)
+        if swap_url and token_address:
+            swap_url = swap_url.replace('{token_address}', token_address)
+        try:
+            live_price = get_live_uniswap_v4_price()
+            token_price_usd = str(live_price.token_price_usd)
+        except UniswapV4PriceError as exc:
+            logger.warning("Unable to fetch live Uniswap v4 price: %s", exc)
+            token_price_usd = "0"
+
         return Response(
             {
-                'token_price_usd': str(settings_obj.token_price_usd),
+                'token_price_usd': token_price_usd,
                 'is_active': settings_obj.is_active,
+                'swap_url': swap_url,
+                'network_name': getattr(settings, 'KYC_PAYMENT_NETWORK_NAME', 'Polygon'),
+                'token_symbol': getattr(settings, 'KYC_PAYMENT_TOKEN_SYMBOL', 'GZC'),
+                'price_source': 'uniswap_v4',
             }
         )
 
