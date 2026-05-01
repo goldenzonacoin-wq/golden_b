@@ -64,6 +64,7 @@ def call_uniswap_trade_api(
     path: str,
     params: Any = None,
     json_body: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> Any:
     url = f"{_get_base_url()}/{path.lstrip('/')}"
     headers = {
@@ -72,6 +73,8 @@ def call_uniswap_trade_api(
     }
     if json_body is not None:
         headers["Content-Type"] = "application/json"
+    if extra_headers:
+        headers.update(extra_headers)
 
     try:
         response = requests.request(

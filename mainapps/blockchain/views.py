@@ -31,6 +31,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+UNISWAP_PROXY_HEADERS = {"x-permit2-disabled": "true"}
+UNISWAP_ROUTER_HEADERS = {
+    "x-permit2-disabled": "true",
+    "x-universal-router-version": "2.0",
+}
+
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 20
@@ -413,21 +419,17 @@ class UniswapSwappableTokensView(APIView):
     def get(self, request):
         token_in = request.query_params.get("tokenIn")
         token_in_chain_id = request.query_params.get("tokenInChainId")
-
-        if not token_in or not token_in_chain_id:
-            return Response(
-                {"detail": "tokenIn and tokenInChainId are required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        params = {}
+        if token_in:
+            params["tokenIn"] = token_in
+        if token_in_chain_id:
+            params["tokenInChainId"] = token_in_chain_id
 
         try:
             payload = call_uniswap_trade_api(
                 method="GET",
                 path="/swappable_tokens",
-                params={
-                    "tokenIn": token_in,
-                    "tokenInChainId": token_in_chain_id,
-                },
+                params=params or None,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
@@ -447,6 +449,7 @@ class UniswapCheckApprovalView(APIView):
                 method="POST",
                 path="/check_approval",
                 json_body=request.data,
+                extra_headers=UNISWAP_PROXY_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
@@ -466,6 +469,7 @@ class UniswapQuoteView(APIView):
                 method="POST",
                 path="/quote",
                 json_body=request.data,
+                extra_headers=UNISWAP_ROUTER_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
@@ -485,6 +489,7 @@ class UniswapSwapView(APIView):
                 method="POST",
                 path="/swap",
                 json_body=request.data,
+                extra_headers=UNISWAP_ROUTER_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
@@ -504,6 +509,7 @@ class UniswapOrderView(APIView):
                 method="POST",
                 path="/order",
                 json_body=request.data,
+                extra_headers=UNISWAP_ROUTER_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
