@@ -24,6 +24,7 @@ from .serializers import (
 from rest_framework.views import APIView
 from .kms_signer import KmsTokenTransfer
 from .uniswap_v4_price import get_live_uniswap_v4_price, UniswapV4PriceError
+from .uniswap_trade_api import call_uniswap_trade_api, UniswapTradeAPIError
 from django.core.exceptions import ValidationError
 from web3 import Web3
 import logging
@@ -371,6 +372,203 @@ class TokenPurchaseSettingsView(APIView):
                 'price_source': 'uniswap_v4',
             }
         )
+
+
+SUPPORTED_UNISWAP_CHAINS = [
+    {"chainId": 1, "name": "Ethereum"},
+    {"chainId": 10, "name": "OP Mainnet"},
+    {"chainId": 56, "name": "BNB Smart Chain"},
+    {"chainId": 130, "name": "Unichain"},
+    {"chainId": 137, "name": "Polygon"},
+    {"chainId": 143, "name": "Monad"},
+    {"chainId": 196, "name": "X Layer"},
+    {"chainId": 324, "name": "zkSync"},
+    {"chainId": 480, "name": "World Chain"},
+    {"chainId": 1868, "name": "Soneium"},
+    {"chainId": 4217, "name": "Tempo"},
+    {"chainId": 8453, "name": "Base"},
+    {"chainId": 10143, "name": "Monad Testnet"},
+    {"chainId": 42161, "name": "Arbitrum"},
+    {"chainId": 42220, "name": "Celo"},
+    {"chainId": 43114, "name": "Avalanche"},
+    {"chainId": 59144, "name": "Linea"},
+    {"chainId": 81457, "name": "Blast"},
+    {"chainId": 7777777, "name": "Zora"},
+    {"chainId": 1301, "name": "Unichain Sepolia"},
+    {"chainId": 84532, "name": "Base Sepolia"},
+    {"chainId": 11155111, "name": "Sepolia"},
+]
+
+
+class UniswapSupportedChainsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({"chains": SUPPORTED_UNISWAP_CHAINS})
+
+
+class UniswapSwappableTokensView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        token_in = request.query_params.get("tokenIn")
+        token_in_chain_id = request.query_params.get("tokenInChainId")
+
+        if not token_in or not token_in_chain_id:
+            return Response(
+                {"detail": "tokenIn and tokenInChainId are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload = call_uniswap_trade_api(
+                method="GET",
+                path="/swappable_tokens",
+                params={
+                    "tokenIn": token_in,
+                    "tokenInChainId": token_in_chain_id,
+                },
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapCheckApprovalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            payload = call_uniswap_trade_api(
+                method="POST",
+                path="/check_approval",
+                json_body=request.data,
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapQuoteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            payload = call_uniswap_trade_api(
+                method="POST",
+                path="/quote",
+                json_body=request.data,
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapSwapView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            payload = call_uniswap_trade_api(
+                method="POST",
+                path="/swap",
+                json_body=request.data,
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapOrderView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            payload = call_uniswap_trade_api(
+                method="POST",
+                path="/order",
+                json_body=request.data,
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapSwapStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tx_hashes = request.query_params.getlist("txHashes")
+        chain_id = request.query_params.get("chainId")
+        if not tx_hashes:
+            return Response(
+                {"detail": "At least one txHashes value is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        params = [("txHashes", tx_hash) for tx_hash in tx_hashes]
+        if chain_id:
+            params.append(("chainId", chain_id))
+
+        try:
+            payload = call_uniswap_trade_api(
+                method="GET",
+                path="/swaps",
+                params=params,
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
+
+
+class UniswapOrderStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        order_ids = request.query_params.getlist("orderIds")
+        if not order_ids:
+            return Response(
+                {"detail": "At least one orderIds value is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payload = call_uniswap_trade_api(
+                method="GET",
+                path="/orders",
+                params=[("orderIds", order_id) for order_id in order_ids],
+            )
+        except UniswapTradeAPIError as exc:
+            response_payload = {"detail": exc.message}
+            if exc.payload is not None:
+                response_payload["upstream"] = exc.payload
+            return Response(response_payload, status=exc.status_code)
+
+        return Response(payload)
 
 
 class StakingPoolListView(generics.ListAPIView):

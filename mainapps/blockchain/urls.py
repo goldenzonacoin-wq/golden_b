@@ -17,7 +17,15 @@ from .views import (
     network_stats,
     AdminTransactionListView,
     AdminBlockchainEventListView,
-    TokenTransferView
+    TokenTransferView,
+    UniswapSupportedChainsView,
+    UniswapSwappableTokensView,
+    UniswapCheckApprovalView,
+    UniswapQuoteView,
+    UniswapSwapView,
+    UniswapOrderView,
+    UniswapSwapStatusView,
+    UniswapOrderStatusView,
 )
 
 
@@ -51,4 +59,12 @@ urlpatterns = [
 
     #KMS Token Transfer endpoint
     path('token-transfer/', TokenTransferView.as_view(), name='kms-token-transfer'),
+    path('uniswap/chains/', UniswapSupportedChainsView.as_view(), name='uniswap-supported-chains'),
+    path('uniswap/swappable-tokens/', UniswapSwappableTokensView.as_view(), name='uniswap-swappable-tokens'),
+    path('uniswap/check-approval/', UniswapCheckApprovalView.as_view(), name='uniswap-check-approval'),
+    path('uniswap/quote/', UniswapQuoteView.as_view(), name='uniswap-quote'),
+    path('uniswap/swap/', UniswapSwapView.as_view(), name='uniswap-swap'),
+    path('uniswap/order/', UniswapOrderView.as_view(), name='uniswap-order'),
+    path('uniswap/swaps/', UniswapSwapStatusView.as_view(), name='uniswap-swap-status'),
+    path('uniswap/orders/', UniswapOrderStatusView.as_view(), name='uniswap-order-status'),
 ]
