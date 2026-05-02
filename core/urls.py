@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path,include
 from django.urls import re_path
-from .views import FlutterwaveWebhookView
+from .views import ContactMessageView, FlutterwaveWebhookView
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
@@ -39,5 +39,6 @@ urlpatterns = [
     path('wallet_api/', include('mainapps.wallet.urls')),
     path('smart_contract_api/', include('mainapps.smart_contract.urls')),
     path('flutter-webhook/',FlutterwaveWebhookView.as_view(), name='flutterwave-webhook'),
+    path('contact/', ContactMessageView.as_view(), name='contact-message'),
 
 ]
