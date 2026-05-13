@@ -31,9 +31,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-UNISWAP_PROXY_HEADERS = {"x-permit2-disabled": "true"}
 UNISWAP_ROUTER_HEADERS = {
-    "x-permit2-disabled": "true",
     "x-universal-router-version": "2.0",
 }
 
@@ -449,7 +447,6 @@ class UniswapCheckApprovalView(APIView):
                 method="POST",
                 path="/check_approval",
                 json_body=request.data,
-                extra_headers=UNISWAP_PROXY_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
