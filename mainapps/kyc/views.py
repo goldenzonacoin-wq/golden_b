@@ -750,6 +750,7 @@ class KYCPaymentViewSet(
             raise ValidationError({'detail': 'This transaction hash has already been used for another payment.'})
 
         receipt, tx = self._load_transaction(tx_hash)
+        self._sync_payment_session_to_transaction_sender(payment=payment, tx=tx)
         self._validate_transfer_against_payment(payment=payment, tx=tx, receipt=receipt)
 
         payment.status = KYCPayment.Status.SUCCESSFUL
@@ -882,14 +883,32 @@ class KYCPaymentViewSet(
 
         return receipt, tx
 
+    def _sync_payment_session_to_transaction_sender(self, payment, tx):
+        tx_sender = tx.get('from')
+        if not tx_sender or not Web3.is_address(tx_sender):
+            raise ValidationError({'detail': 'Unable to determine the wallet that sent this transaction.'})
+
+        tx_sender_checksum = Web3.to_checksum_address(tx_sender)
+        current_payer = payment.payer_wallet_address
+
+        if current_payer and current_payer.lower() == tx_sender_checksum.lower():
+            return
+
+        # The authoritative wallet for a completed KYC payment is the wallet that
+        # actually sent the on-chain transfer. If the user prepared the fee quote
+        # with a different wallet first, adopt the real payer here so verification
+        # does not fail after a valid payment.
+        self._sync_user_wallet(user=payment.user, wallet_address=tx_sender_checksum)
+
+        payment.payer_wallet_address = tx_sender_checksum
+        payment.payment_rejection_reason = None
+        payment.save(update_fields=['payer_wallet_address', 'payment_rejection_reason', 'updated_at'])
+
     def _validate_transfer_against_payment(self, payment, tx, receipt):
         expected_sender = (payment.payer_wallet_address or '').lower()
         tx_sender = (tx.get('from') or '').lower()
         if expected_sender != tx_sender:
-            payment.status = KYCPayment.Status.FAILED
-            payment.payment_rejection_reason = 'Transaction sender does not match the wallet used for KYC payment.'
-            payment.save(update_fields=['status', 'payment_rejection_reason', 'updated_at'])
-            raise ValidationError({'detail': payment.payment_rejection_reason})
+            raise ValidationError({'detail': 'Unable to align the payment session with the transaction sender.'})
 
         transfer_topic = Web3.keccak(text='Transfer(address,address,uint256)').hex().lower()
         expected_token = (payment.token_address or '').lower()
