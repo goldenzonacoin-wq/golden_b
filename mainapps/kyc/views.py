@@ -293,7 +293,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "is_unique": True,
-                    "message": "Document number looks good and is not in use.",
+                    "message": "This document number is available for the selected ID type and issuing country.",
                     "duplicate_ids": [],
                 }
             )
@@ -301,7 +301,7 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "is_unique": False,
-                "message": "This document number is already linked to another KYC. Please double check or use a different document.",
+                "message": "This document number is already registered for the same ID type and issuing country.",
                 "duplicate_ids": data["duplicate_ids"],
             },
             status=status.HTTP_200_OK,

@@ -2,10 +2,12 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from django.db import models
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 from django.core.validators import FileExtensionValidator
 from django.core.exceptions import ValidationError
+from django.db.models.functions import Upper
 from PIL import Image
 
 from mainapps.accounts.models import Address
@@ -210,6 +212,20 @@ class KYCApplication(models.Model):
             models.Index(fields=['status', 'created_at']),
             models.Index(fields=['user', 'status']),
             models.Index(fields=['application_id']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                Upper('document_number'),
+                'document_type',
+                'document_issuing_country',
+                condition=(
+                    Q(document_number__isnull=False)
+                    & ~Q(document_number='')
+                    & Q(document_type__isnull=False)
+                    & Q(document_issuing_country__isnull=False)
+                ),
+                name='uniq_kyc_doc_identity_ci',
+            ),
         ]
     
     def save(self, *args, **kwargs):

@@ -11,6 +11,49 @@ from .models import (
 )
 
 
+def _document_identity_queryset(document_number, document_type, document_issuing_country):
+    if not (document_number and document_type and document_issuing_country):
+        return KYCApplication.objects.none()
+
+    return KYCApplication.objects.filter(
+        document_number__iexact=document_number,
+        document_type=document_type,
+        document_issuing_country=document_issuing_country,
+    )
+
+
+def _validate_document_identity(attrs, instance=None):
+    document_number = attrs.get('document_number')
+    document_type = attrs.get('document_type')
+    document_issuing_country = attrs.get('document_issuing_country')
+
+    if instance:
+        if document_number is None:
+            document_number = instance.document_number
+        if document_type is None:
+            document_type = instance.document_type
+        if document_issuing_country is None:
+            document_issuing_country = instance.document_issuing_country
+
+    if not (document_number and document_type and document_issuing_country):
+        return attrs
+
+    qs = _document_identity_queryset(document_number, document_type, document_issuing_country)
+    if instance:
+        qs = qs.exclude(pk=instance.pk)
+
+    if qs.exists():
+        raise serializers.ValidationError(
+            {
+                'document_number': [
+                    'This document number is already registered for the same ID type and issuing country.'
+                ]
+            }
+        )
+
+    return attrs
+
+
 class KYCApplicationSerializer(serializers.ModelSerializer):
     """Serializer for KYC applications"""
     user_email = serializers.EmailField(source='user.email', read_only=True)
@@ -62,6 +105,7 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
         if first_name or middle_name or last_name:
             name_parts = [first_name, middle_name, last_name]
             attrs['full_name'] = " ".join([part for part in name_parts if part])
+        _validate_document_identity(attrs, self.instance)
         return attrs
 
     def validate_date_of_birth(self, value):
@@ -98,12 +142,6 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("ID number looks too short—double check and re-enter.")
         if not re.match(r"^[A-Za-z0-9\\-\\/]+$", cleaned):
             raise serializers.ValidationError("Use only letters, numbers, dashes or slashes for the ID number.")
-        qs = KYCApplication.objects.filter(document_number__iexact=cleaned)
-        user = self.context['request'].user if self.context.get('request') else None
-        if user:
-            qs = qs.exclude(user=user)
-        if qs.exists():
-            raise serializers.ValidationError("This document number is already associated with another application.")
         return cleaned
 
     def validate_source_of_funds(self, value):
@@ -317,12 +355,6 @@ class KYCApplicationCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("ID number looks too short—double check and re-enter.")
         if not re.match(r"^[A-Za-z0-9\\-\\/]+$", cleaned):
             raise serializers.ValidationError("Use only letters, numbers, dashes or slashes for the ID number.")
-        qs = KYCApplication.objects.filter(document_number__iexact=cleaned)
-        user = self.context['request'].user if self.context.get('request') else None
-        if user:
-            qs = qs.exclude(user=user)
-        if qs.exists():
-            raise serializers.ValidationError("This document number is already associated with another application.")
         return cleaned
 
     def validate_source_of_funds(self, value):
@@ -363,6 +395,7 @@ class KYCApplicationCreateSerializer(serializers.ModelSerializer):
         if first_name or middle_name or last_name:
             name_parts = [first_name, middle_name, last_name]
             attrs['full_name'] = " ".join([part for part in name_parts if part])
+        _validate_document_identity(attrs, self.instance)
         return attrs
 
 
@@ -616,9 +649,11 @@ class DocumentNumberCheckSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         number = attrs.get("document_number")
+        document_type = attrs.get("document_type")
+        document_issuing_country = attrs.get("document_issuing_country")
         current_id = attrs.get("current_application_id")
 
-        qs = KYCApplication.objects.filter(document_number__iexact=number)
+        qs = _document_identity_queryset(number, document_type, document_issuing_country)
         if current_id:
             qs = qs.exclude(application_id=current_id)
 
