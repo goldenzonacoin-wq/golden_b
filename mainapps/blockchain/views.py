@@ -379,10 +379,10 @@ class TokenPurchaseSettingsView(APIView):
 
 
 SUPPORTED_UNISWAP_CHAINS = [
-    {"chainId": 1, "name": "Ethereum"},
-    {"chainId": 130, "name": "Unichain"},
+    # {"chainId": 1, "name": "Ethereum"},
+    # {"chainId": 130, "name": "Unichain"},
     {"chainId": 137, "name": "Polygon"},
-    {"chainId": 8453, "name": "Base"},
+    # {"chainId": 8453, "name": "Base"},
     # {"chainId": 10, "name": "OP Mainnet"},
     # {"chainId": 56, "name": "BNB Smart Chain"},
     # {"chainId": 143, "name": "Monad"},
