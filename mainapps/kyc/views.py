@@ -28,7 +28,7 @@ from .serializers import (
     KYCSettingsSerializer, KYCStatsSerializer, KYCPaymentSerializer,
     KYCPaymentInitiateSerializer, KYCPaymentVerifySerializer, DocumentNumberCheckSerializer
 )
-from mainapps.accounts.models import Address
+from mainapps.accounts.models import Address, UserActivity
 from mainapps.accounts.serializers import AddressSerializer
 from cities_light.models import Country, Region, SubRegion, City
 
@@ -150,7 +150,6 @@ class KYCApplicationViewSet(viewsets.ModelViewSet):
         application.save()
         
         # Log activity
-        from accounts.models import UserActivity
         UserActivity.objects.create(
             user=request.user,
             activity_type='kyc_submission',
