@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 UNISWAP_ROUTER_HEADERS = {
     "x-universal-router-version": "2.0",
+    "x-permit2-disabled": "true",
 }
 
 
@@ -443,6 +444,7 @@ class UniswapCheckApprovalView(APIView):
                 method="POST",
                 path="/check_approval",
                 json_body=request.data,
+                extra_headers=UNISWAP_ROUTER_HEADERS,
             )
         except UniswapTradeAPIError as exc:
             response_payload = {"detail": exc.message}
