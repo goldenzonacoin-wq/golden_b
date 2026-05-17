@@ -6,6 +6,7 @@ from django.core.files.base import ContentFile
 from django.db.models import Q
 from mainapps.accounts.models import Address
 from mainapps.accounts.models import validate_wallet_address as validate_account_wallet_address
+from mainapps.accounts.serializers import AddressSerializer
 from .models import (
     KYCApplication, KYCDocument, KYCReviewNote, 
     ComplianceCheck, KYCSettings, KYCPayment
@@ -66,6 +67,10 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
     document_issuing_country_name = serializers.ReadOnlyField(source='document_issuing_country.name')
     reviewed_by_email = serializers.EmailField(source='reviewed_by.email', read_only=True)
     reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True)
+    address_details = AddressSerializer(source='address', read_only=True)
+    origin_details_details = AddressSerializer(source='origin_details', read_only=True)
+    address_full = serializers.SerializerMethodField()
+    origin_details_full = serializers.SerializerMethodField()
     
     class Meta:
         model = KYCApplication
@@ -79,16 +84,53 @@ class KYCApplicationSerializer(serializers.ModelSerializer):
             'intended_use', 'crypto_experience', 'other_wallets','document_type',
             'submitted_at', 'reviewed_at', 'expires_at', 'days_until_expiry',
             'is_expired', 'created_at', 'updated_at','nationality_name','document_type_display',
-            'document_issuing_country_name',
+            'document_issuing_country_name', 'address_details', 'origin_details_details',
+            'address_full', 'origin_details_full',
             'phone_number', 'review_notes', 'rejection_reason', 'reviewed_by_email', 'reviewed_by_name'
         )
         read_only_fields = (
             'id', 'application_id', 'user_email', 'status_display',
             'document_type_display', 'submitted_at', 'reviewed_at',
             'expires_at', 'days_until_expiry', 'is_expired',
-            'created_at', 'updated_at','nationality_name', 'document_issuing_country_name', 'review_notes',
+            'created_at', 'updated_at','nationality_name', 'document_issuing_country_name',
+            'address_details', 'origin_details_details', 'address_full', 'origin_details_full', 'review_notes',
             'rejection_reason', 'reviewed_by_email', 'reviewed_by_name'
         )
+
+    def _format_address(self, address):
+        if not address:
+            return None
+
+        parts = []
+
+        street_bits = []
+        if getattr(address, "street_number", None):
+            street_bits.append(str(address.street_number))
+        if getattr(address, "street", None):
+            street_bits.append(address.street)
+        if street_bits:
+            parts.append(" ".join(street_bits))
+
+        if getattr(address, "apt_number", None):
+            parts.append(f"Apt {address.apt_number}")
+
+        for value in [
+            getattr(getattr(address, "city", None), "name", None),
+            getattr(getattr(address, "subregion", None), "name", None),
+            getattr(getattr(address, "region", None), "name", None),
+            getattr(getattr(address, "country", None), "name", None),
+            getattr(address, "postal_code", None),
+        ]:
+            if value:
+                parts.append(str(value))
+
+        return ", ".join(parts) if parts else None
+
+    def get_address_full(self, obj):
+        return self._format_address(getattr(obj, "address", None))
+
+    def get_origin_details_full(self, obj):
+        return self._format_address(getattr(obj, "origin_details", None))
     
     def validate(self, attrs):
         # Ensure user can only have one active application
