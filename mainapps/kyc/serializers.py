@@ -3,6 +3,7 @@ from rest_framework import serializers
 from django.utils import timezone
 from cities_light.models import Country
 from django.core.files.base import ContentFile
+from django.db.models import Q
 from mainapps.accounts.models import Address
 from mainapps.accounts.models import validate_wallet_address as validate_account_wallet_address
 from .models import (
@@ -657,7 +658,10 @@ class DocumentNumberCheckSerializer(serializers.Serializer):
 
         qs = _document_identity_queryset(number, document_type, document_issuing_country)
         if current_id:
-            qs = qs.exclude(application_id=current_id)
+            exclusion_filter = Q(application_id=current_id)
+            if str(current_id).isdigit():
+                exclusion_filter |= Q(pk=int(current_id))
+            qs = qs.exclude(exclusion_filter)
 
         attrs["duplicate_ids"] = list(qs.values_list("application_id", flat=True))
         attrs["is_unique"] = not bool(attrs["duplicate_ids"])
