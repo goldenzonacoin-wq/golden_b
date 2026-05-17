@@ -13,6 +13,8 @@ class AccountJWTAuthentication(JWTAuthentication):
         "/api/v1/accounts/mfa/setup/",
         "/api/v1/accounts/mfa/verify/",
         "/api/v1/accounts/mfa/toggle/",
+        "/api/v1/accounts/mfa/reset/request/",
+        "/api/v1/accounts/mfa/reset/verify/",
         "/api/v1/accounts/verify/",
     )
 

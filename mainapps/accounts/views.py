@@ -48,6 +48,28 @@ class StandardResultsSetPagination(PageNumberPagination):
 logger = logging.getLogger(__name__)
 
 
+def _issue_verification_code(user, verification_type="email"):
+    codes = VerificationCode.objects.filter(user=user, verification_type=verification_type).order_by("-created_at")
+    verification_code = codes.first()
+
+    if verification_code is None:
+        verification_code = VerificationCode(user=user, verification_type=verification_type)
+    else:
+        codes.exclude(pk=verification_code.pk).delete()
+
+    verification_code.verification_type = verification_type
+    verification_code.save()
+    return verification_code
+
+
+def _get_latest_verification_code(user, verification_type="email"):
+    return (
+        VerificationCode.objects.filter(user=user, verification_type=verification_type)
+        .order_by("-created_at")
+        .first()
+    )
+
+
 def _set_session_cookies(response, access_token=None, refresh_token=None):
     if access_token:
         response.set_cookie(
@@ -160,7 +182,8 @@ class MfaSetupView(APIView):
         if force or not user.mfa_secret:
             user.mfa_secret = pyotp.random_base32()
             user.mfa_enabled = False
-            user.save(update_fields=["mfa_secret", "mfa_enabled"])
+            user.has_setup_mfa = False
+            user.save(update_fields=["mfa_secret", "mfa_enabled", "has_setup_mfa"])
 
         issuer = getattr(settings, "MFA_ISSUER", "GoldenZona")
         totp = pyotp.TOTP(user.mfa_secret)
@@ -277,6 +300,92 @@ class MfaToggleView(APIView):
             {"detail": f"MFA {state} successfully.", "mfa_enabled": user.mfa_enabled},
             status=status.HTTP_200_OK,
         )
+
+
+class MfaResetRequestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = get_user_model().objects.get(id=request.user.id)
+
+        if not user.mfa_enabled or not user.has_setup_mfa:
+            return Response(
+                {"detail": "MFA is not currently enabled for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        verification_code = _issue_verification_code(user, verification_type="2fa")
+        send_html_email(
+            subject=f"Your MFA reset code: {verification_code.code}",
+            message=(
+                "Use this code to confirm that you want to reset your authenticator setup. "
+                f"Your verification code is {verification_code.code}."
+            ),
+            to_email=[user.email],
+            html_file="accounts/verify.html",
+        )
+
+        return Response(
+            {"detail": "A verification code has been sent to your email address."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class MfaResetVerifyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = get_user_model().objects.get(id=request.user.id)
+        code_input = (request.data.get("code") or "").strip()
+
+        if not code_input:
+            return Response({"detail": "Verification code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.mfa_enabled or not user.has_setup_mfa:
+            return Response(
+                {"detail": "MFA is not currently enabled for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        verification_code = _get_latest_verification_code(user, verification_type="2fa")
+        if verification_code is None:
+            return Response(
+                {"detail": "No active MFA reset code was found for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not verification_code.is_valid():
+            return Response(
+                {"detail": "Verification code has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if str(verification_code.code) != code_input:
+            return Response(
+                {"detail": "Invalid verification code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            VerificationCode.objects.filter(user=user, verification_type="2fa").delete()
+            user.mfa_secret = None
+            user.mfa_enabled = False
+            user.has_setup_mfa = False
+            user.save(update_fields=["mfa_secret", "mfa_enabled", "has_setup_mfa"])
+
+        refresh, access = MyTokenObtainPairSerializer.issue_tokens_for_user(user, mfa_verified=True)
+        payload = _build_auth_payload(user, refresh, access)
+        payload.update(
+            {
+                "detail": "MFA reset confirmed. You can now set up a new authenticator.",
+                "mfa_enabled": False,
+                "has_setup_mfa": False,
+                "mfa_verified": True,
+            }
+        )
+        response = Response(payload, status=status.HTTP_200_OK)
+        _set_session_cookies(response, access_token=str(access), refresh_token=str(refresh))
+        return response
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -496,8 +605,7 @@ class VerificationAPI(APIView):
         
         try:
             user = User.objects.get(email=email)
-            code, created = VerificationCode.objects.get_or_create(user=user)
-            code.save()  # Ensure the code is saved or updated
+            code = _issue_verification_code(user, verification_type="email")
             
             send_html_email(
                 subject=f'Your Verification Code: {code.code}',
@@ -531,7 +639,12 @@ class VerificationAPI(APIView):
         try:
             user = User.objects.get(email=email)
 
-            verification_code = VerificationCode.objects.get(user=user)
+            verification_code = _get_latest_verification_code(user, verification_type="email")
+            if verification_code is None:
+                return Response(
+                    {"error": "No active verification code for this user"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             if not verification_code.is_valid():
                 return Response(
                     {"error": "Verification code has expired"},
@@ -544,6 +657,7 @@ class VerificationAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            verification_code.delete()
             return Response(
                 {
                     "message": "Verification successful",
@@ -558,12 +672,6 @@ class VerificationAPI(APIView):
                 {"error": "User  not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
-        except VerificationCode.DoesNotExist:
-            return Response(
-                {"error": "No active verification code for this user"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
 class OrganisationViewSet(viewsets.ModelViewSet):
     """
     A viewset for viewing and editing organisation instances.

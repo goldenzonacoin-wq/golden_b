@@ -2,7 +2,7 @@ import pyotp
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import User
+from .models import User, VerificationCode
 
 
 class MfaAuthFlowTests(APITestCase):
@@ -20,6 +20,7 @@ class MfaAuthFlowTests(APITestCase):
             "/auth/login/",
             {"email": self.user.email, "password": self.password},
             format="json",
+            follow=True,
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -32,6 +33,7 @@ class MfaAuthFlowTests(APITestCase):
             "/auth/login/",
             {"email": self.user.email, "password": self.password},
             format="json",
+            follow=True,
         )
 
         access = login_response.data["access"]
@@ -46,6 +48,7 @@ class MfaAuthFlowTests(APITestCase):
             "/auth/login/",
             {"email": self.user.email, "password": self.password},
             format="json",
+            follow=True,
         )
         access = login_response.data["access"]
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
@@ -71,3 +74,45 @@ class MfaAuthFlowTests(APITestCase):
         self.assertEqual(me_response.status_code, status.HTTP_200_OK)
         self.assertTrue(me_response.data["mfa_enabled"])
         self.assertTrue(me_response.data["has_setup_mfa"])
+
+    def test_mfa_reset_request_and_verify_clears_existing_setup(self):
+        login_response = self.client.post(
+            "/auth/login/",
+            {"email": self.user.email, "password": self.password},
+            format="json",
+            follow=True,
+        )
+        access = login_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+        setup_response = self.client.post("/api/v1/accounts/mfa/setup/", {}, format="json")
+        self.assertEqual(setup_response.status_code, status.HTTP_200_OK)
+        totp = pyotp.TOTP(setup_response.data["mfa_secret"])
+        verify_response = self.client.post(
+            "/api/v1/accounts/mfa/verify/",
+            {"code": totp.now()},
+            format="json",
+        )
+        self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+
+        verified_access = verify_response.data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {verified_access}")
+
+        request_response = self.client.post("/api/v1/accounts/mfa/reset/request/", {}, format="json")
+        self.assertEqual(request_response.status_code, status.HTTP_200_OK)
+
+        verification_code = VerificationCode.objects.get(user=self.user, verification_type="2fa")
+        reset_response = self.client.post(
+            "/api/v1/accounts/mfa/reset/verify/",
+            {"code": verification_code.code},
+            format="json",
+        )
+
+        self.assertEqual(reset_response.status_code, status.HTTP_200_OK)
+        self.assertFalse(reset_response.data["mfa_enabled"])
+        self.assertFalse(reset_response.data["has_setup_mfa"])
+
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.mfa_enabled)
+        self.assertFalse(self.user.has_setup_mfa)
+        self.assertIsNone(self.user.mfa_secret)
